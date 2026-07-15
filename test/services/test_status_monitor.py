@@ -397,3 +397,21 @@ class TestRawDebounceArmedDetection:
         sm._process_chunk("t1", "● Working on task...")
 
         assert sm._last_status["t1"] == TerminalStatus.PROCESSING
+
+
+class TestScreenDebounceArmedDetection:
+    """A continuous TUI repaint cannot strand an armed turn at COMPLETED."""
+
+    def test_armed_ready_redetects_inside_existing_screen_burst(self):
+        sm = StatusMonitor()
+        sm._loop = MagicMock()
+        sm._last_status["t1"] = TerminalStatus.COMPLETED
+        sm._allow_processing_revert["t1"] = True
+        sm._bursting["t1"] = True
+        sm._detect_screen = MagicMock(return_value=TerminalStatus.PROCESSING)
+        sm._arm_quiesce_timer = MagicMock()
+
+        sm._schedule_screen_detection("t1", MagicMock())
+
+        assert sm._last_status["t1"] == TerminalStatus.PROCESSING
+        assert sm._allow_processing_revert["t1"] is False

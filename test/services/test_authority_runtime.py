@@ -284,3 +284,35 @@ def test_role_send_rejects_self_send(tmp_path: Path):
             to_role="project-director",
             message="loop",
         )
+
+
+def test_explicit_role_allows_stale_background_terminal_id(tmp_path: Path):
+    runtime = _runtime(tmp_path)
+    runtime._running_manifest = Mock(return_value=_running_manifest(runtime))  # type: ignore[method-assign]
+    response = Mock()
+    response.json.return_value = {"success": True, "message_id": 18}
+    runtime._request = Mock(return_value=response)  # type: ignore[method-assign]
+
+    with patch.dict("os.environ", {"CAO_TERMINAL_ID": "cccccccc"}):
+        result = runtime.send(
+            from_role="technical-director",
+            to_role="project-director",
+            message="ack",
+        )
+
+    assert result["message_id"] == 18
+
+
+def test_explicit_role_rejects_other_current_role_identity(tmp_path: Path):
+    runtime = _runtime(tmp_path)
+    runtime._running_manifest = Mock(return_value=_running_manifest(runtime))  # type: ignore[method-assign]
+
+    with (
+        patch.dict("os.environ", {"CAO_TERMINAL_ID": "aaaaaaaa"}),
+        pytest.raises(RuntimeError, match="does not match"),
+    ):
+        runtime.send(
+            from_role="technical-director",
+            to_role="project-director",
+            message="impersonation",
+        )

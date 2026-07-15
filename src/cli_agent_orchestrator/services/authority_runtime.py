@@ -646,7 +646,16 @@ class AuthorityRuntime:
             sender_id = str(env_sender)
         else:
             sender_id = self.role_terminal_id(from_role, manifest=manifest)
-            if env_sender and env_sender != sender_id:
+            current_ids = {
+                str(manifest.project_director_terminal_id),
+                str(manifest.technical_director_terminal_id),
+            }
+            # Resumed Claude background sessions can retain a terminal ID from
+            # the generation that originally spawned their daemon. Treat that
+            # stale value like an outside shell: the explicit current role is
+            # required and authoritative. A *current-generation* mismatch is
+            # still a hard impersonation error.
+            if env_sender in current_ids and env_sender != sender_id:
                 raise RuntimeError("--from role does not match CAO_TERMINAL_ID")
         if sender_id == receiver_id:
             raise ValueError("authority sender and receiver must be different roles")
