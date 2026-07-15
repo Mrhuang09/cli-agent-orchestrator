@@ -1707,6 +1707,31 @@ class TestClaudeCodeMcpCallNotCompleted:
         assert provider.get_status(output) == TerminalStatus.COMPLETED
 
 
+class TestClaudeCodeAuthorityLiveToolStatus:
+    """Authority bridge fixture: a live shell row outranks pinned idle chrome."""
+
+    def test_live_shell_row_is_processing(self):
+        fixture = (
+            Path(__file__).parent
+            / "fixtures"
+            / "claude_code_authority_live_shell.txt"
+        ).read_text(encoding="utf-8")
+        provider = ClaudeCodeProvider("test123", "test-session", "window-0")
+
+        assert provider.get_status(fixture) == TerminalStatus.PROCESSING
+
+    def test_newer_completion_makes_old_shell_row_stale(self):
+        fixture = (
+            Path(__file__).parent
+            / "fixtures"
+            / "claude_code_authority_live_shell.txt"
+        ).read_text(encoding="utf-8")
+        output = fixture + "\n● Finished verification\n✻ Crunched for 2s\n❯ \n"
+        provider = ClaudeCodeProvider("test123", "test-session", "window-0")
+
+        assert provider.get_status(output) == TerminalStatus.COMPLETED
+
+
 class TestClaudeCodeScreenDetection:
     """Viewport detector (get_status_from_screen) — pyte-composited screens.
 

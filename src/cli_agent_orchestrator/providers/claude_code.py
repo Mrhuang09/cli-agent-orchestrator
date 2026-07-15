@@ -54,6 +54,16 @@ EXTRACTION_RESPONSE_PATTERN = re.compile(
 # captured frames shows a bare "*". Omitting it left a live "* Cultivating…"
 # frame invisible to every processing detector (false IDLE/COMPLETED mid-turn).
 PROCESSING_PATTERN = r"[✶✢✽✻✳·*].*\u2026"
+# Claude Code may replace the gerund spinner with a textual live tool row.
+# This was reproduced in the authority bridge as "Running 1 shell command"
+# while an older completion summary and the pinned input box remained visible.
+# Match only the explicit present-tense status row; the completed repaint uses
+# "Ran", so ordinary response prose mentioning "running" is not sufficient.
+ACTIVE_TOOL_ROW_PATTERN = re.compile(
+    r"^[ \t]*(?:[●⏺][ \t]+)?Running[ \t]+\d+[ \t]+"
+    r"(?:shell[ \t]+commands?|commands?|tools?)(?:\u2026|\.{3})?[ \t]*$",
+    re.MULTILINE,
+)
 # Structural PROCESSING indicator (reference pattern — get_status uses an
 # inline last-separator-anchored version to avoid false positives from
 # mid-conversation compaction events like "✢ Compacting conversation…"):
@@ -730,6 +740,20 @@ class ClaudeCodeProvider(BaseProvider):
                 continue  # background-wait line, not a completion summary (GH #392)
             last_completion = m
 
+        # A live textual tool row can be newer than an interim response or
+        # completion summary even when Claude's pinned prompt box is visible.
+        # A later response/completion means the row belongs to an older frame
+        # and must not pin the terminal in PROCESSING.
+        last_active_tool = None
+        for m in ACTIVE_TOOL_ROW_PATTERN.finditer(output):
+            last_active_tool = m
+        if last_active_tool is not None and not any(
+            marker.start() > last_active_tool.start()
+            for marker in (last_completion, last_response)
+            if marker is not None
+        ):
+            return TerminalStatus.PROCESSING
+
         # FALLBACK PROCESSING: spinner visible AND no separator follows it yet
         if last_processing and not re.search(r"\u2500{20,}", output):
             if last_idle is None or last_processing.start() > last_idle.start():
@@ -867,6 +891,8 @@ class ClaudeCodeProvider(BaseProvider):
         # The raw get_status() path already switched to the tight pattern for the
         # same reason; the screen path must match.
         if any(NEW_TUI_BOX_SPINNER_PATTERN.search(ln) for ln in bottom):
+            return TerminalStatus.PROCESSING
+        if any(ACTIVE_TOOL_ROW_PATTERN.search(ln) for ln in bottom):
             return TerminalStatus.PROCESSING
 
         bottom_joined = "\n".join(bottom)
