@@ -74,6 +74,18 @@ API_RETRY_ROW_PATTERN = re.compile(
     r"\d+(?:\.\d+)?s[ \t]+·[ \t]+attempt[ \t]+\d+/\d+[ \t]*$",
     re.MULTILINE,
 )
+# Agent View can render the live turn as a localized task title rather than an
+# English gerund spinner, for example:
+# ``✽ 打 S1 最小封口… (1m 15s · ↓ 3.6k tokens · thinking with xhigh effort)``.
+# The elapsed-time plus token/thinking telemetry is the stable live signature;
+# requiring that telemetry avoids treating an ordinary markdown bullet ending
+# in an ellipsis as PROCESSING.
+AGENT_PROGRESS_ROW_PATTERN = re.compile(
+    r"^[ \t]*[✶✢✽✻✳·*][ \t]+[^\n]+…[ \t]+\("
+    r"(?:\d+m[ \t]+)?\d+s[ \t]+·[ \t]+[^\n)]*"
+    r"(?:tokens?|thinking|effort)[^\n)]*\)[ \t]*$",
+    re.MULTILINE,
+)
 # Structural PROCESSING indicator (reference pattern — get_status uses an
 # inline last-separator-anchored version to avoid false positives from
 # mid-conversation compaction events like "✢ Compacting conversation…"):
@@ -760,6 +772,9 @@ class ClaudeCodeProvider(BaseProvider):
         for m in API_RETRY_ROW_PATTERN.finditer(output):
             if last_active_tool is None or m.start() > last_active_tool.start():
                 last_active_tool = m
+        for m in AGENT_PROGRESS_ROW_PATTERN.finditer(output):
+            if last_active_tool is None or m.start() > last_active_tool.start():
+                last_active_tool = m
         if last_active_tool is not None and not any(
             marker.start() > last_active_tool.start()
             for marker in (last_completion, last_response)
@@ -908,6 +923,8 @@ class ClaudeCodeProvider(BaseProvider):
         if any(ACTIVE_TOOL_ROW_PATTERN.search(ln) for ln in bottom):
             return TerminalStatus.PROCESSING
         if any(API_RETRY_ROW_PATTERN.search(ln) for ln in bottom):
+            return TerminalStatus.PROCESSING
+        if any(AGENT_PROGRESS_ROW_PATTERN.search(ln) for ln in bottom):
             return TerminalStatus.PROCESSING
 
         bottom_joined = "\n".join(bottom)

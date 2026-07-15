@@ -1842,6 +1842,34 @@ class TestClaudeCodeScreenDetection:
         )
         assert self._p().get_status(output) == TerminalStatus.PROCESSING
 
+    def test_localized_agent_progress_row_is_processing(self):
+        screen = [
+            "● 273 行。读全文以取证。",
+            "✽ 打 S1 v0.4.2 最小封口… (1m 15s · ↓ 3.6k tokens · thinking with xhigh effort)",
+            "─" * 60,
+            "❯ ",
+            "─" * 60,
+        ]
+        assert self._p().get_status_from_screen(screen) == TerminalStatus.PROCESSING
+
+    def test_raw_localized_agent_progress_is_newer_than_old_completion(self):
+        output = (
+            "✻ Crunched for 5m 29s\n"
+            "● 273 行。读全文以取证。\n"
+            "✢ 打 S1 v0.4.2 最小封口… (35s · ↓ 1.2k tokens · thinking with xhigh effort)\n"
+        )
+        assert self._p().get_status(output) == TerminalStatus.PROCESSING
+
+    def test_markdown_bullet_with_duration_but_no_telemetry_is_completed(self):
+        screen = [
+            "● Done — see notes.",
+            "* Remember to retry… (35s)",
+            "─" * 60,
+            "❯ ",
+            "─" * 60,
+        ]
+        assert self._p().get_status_from_screen(screen) == TerminalStatus.COMPLETED
+
 
 class TestClaudeCodeBackgroundTaskNotCompleted:
     """A backgrounded task must not read as COMPLETED (GH #392).
