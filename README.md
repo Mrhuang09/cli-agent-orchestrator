@@ -18,6 +18,7 @@ CAO (pronounced "kay-oh") is a lightweight local orchestrator that sits between 
 - **Headless agent execution in CI** — `cao launch --headless --async` to run tasks unattended.
 - **Multi-agent swarms with HITL** — humans can attach to any tmux session to intervene or steer.
 - **Agent-driven agent management** — a primary agent uses [`cao-ops-mcp`](#cao-ops-mcp-server) to spawn and monitor CAO sessions from its own chat loop.
+- **Persistent Codex–Claude leadership** — this fork can resume existing project-director and technical-director conversations in the same checkout and connect them through CAO. See [Persistent Authority Bridge](docs/authority-bridge.md).
 
 ## Hierarchical Multi-Agent System
 
@@ -104,6 +105,18 @@ uv tool install cli-agent-orchestrator==2.1.0
 ```
 
 For local development (`git clone` + `uv sync`) and the testing/quality workflow, see [DEVELOPMENT.md](DEVELOPMENT.md).
+
+### Install the persistent authority bridge fork
+
+This fork adds `cao authority` for the persistent Codex–Claude leadership workflow:
+
+```bash
+uv tool install --upgrade \
+  git+https://github.com/Mrhuang09/cli-agent-orchestrator.git@main
+cao authority --help
+```
+
+See [docs/authority-bridge.md](docs/authority-bridge.md) for initialization, daily operation, and safety boundaries.
 
 ## Devcontainer Feature
 

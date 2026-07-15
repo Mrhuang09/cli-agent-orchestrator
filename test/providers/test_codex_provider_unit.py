@@ -79,6 +79,26 @@ class TestCodexBuildCommand:
         assert command == "codex --yolo --no-alt-screen --disable shell_snapshot"
 
     @patch("cli_agent_orchestrator.providers.codex.load_agent_profile")
+    def test_build_command_resumes_explicit_authority_session(self, mock_load_profile):
+        mock_profile = MagicMock()
+        mock_profile.model = "gpt-5.6-sol"
+        mock_profile.system_prompt = None
+        mock_profile.mcpServers = None
+        mock_profile.codexProfile = None
+        mock_profile.codexConfig = None
+        mock_profile.resumeSessionId = "11111111-1111-4111-8111-111111111111"
+        mock_load_profile.return_value = mock_profile
+
+        provider = CodexProvider(
+            "test1234", "test-session", "window-0", "project-director", allowed_tools=["*"]
+        )
+        command = provider._build_codex_command()
+
+        assert command.startswith("codex --yolo")
+        assert "--model gpt-5.6-sol" in command
+        assert command.endswith("resume 11111111-1111-4111-8111-111111111111")
+
+    @patch("cli_agent_orchestrator.providers.codex.load_agent_profile")
     def test_build_command_with_skill_prompt(self, mock_load_profile):
         mock_profile = MagicMock()
         mock_profile.model = None
@@ -729,6 +749,49 @@ class TestCodexProviderStatusDetection:
         status = provider.get_status(output)
 
         assert status == TerminalStatus.PROCESSING
+
+    def test_rendered_screen_reports_completed_after_raw_stream_stale_spinner(self):
+        provider = CodexProvider("test1234", "test-session", "window-0")
+        screen = [
+            "› CLAUDE_FORWARD_ACK",
+            "",
+            "• 已收到技术总监转发的 worker 结果。",
+            "",
+            "› Find and fix a bug in @filename",
+            "",
+            "  gpt-5.6-sol high · /home/test/sample-project",
+        ]
+
+        assert provider.supports_screen_detection is True
+        assert provider.get_status_from_screen(screen) == TerminalStatus.COMPLETED
+
+    def test_rendered_screen_keeps_live_spinner_processing(self):
+        provider = CodexProvider("test1234", "test-session", "window-0")
+        screen = [
+            "› Review the worker result",
+            "",
+            "• Working (3s • esc to interrupt)",
+            "",
+            "› Find and fix a bug in @filename",
+            "",
+            "  gpt-5.6-sol high · /home/test/sample-project",
+        ]
+
+        assert provider.get_status_from_screen(screen) == TerminalStatus.PROCESSING
+
+    def test_rendered_screen_keeps_hollow_live_spinner_processing(self):
+        provider = CodexProvider("test1234", "test-session", "window-0")
+        screen = [
+            "› Send a worker callback",
+            "",
+            "◦ Working (44s • esc to interrupt)",
+            "",
+            "› Run /review on my current changes",
+            "",
+            "  gpt-5.6-sol high · /home/test/sample-project",
+        ]
+
+        assert provider.get_status_from_screen(screen) == TerminalStatus.PROCESSING
 
     def test_get_status_waiting_user_answer(self):
         output = load_fixture("codex_permission_output.txt")

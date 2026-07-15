@@ -68,13 +68,14 @@ ERROR_PATTERN = r"^(?:Error:|ERROR:|Traceback \(most recent call last\):|panic:)
 # The "·\s+[~/]" alternative anchors on the path component of the footer,
 # which is shared across v0.111 and v0.136 status bars.
 TUI_FOOTER_PATTERN = r"(?:\?\s+for shortcuts|context left|\d+%\s+left|·\s+[~/])"
-# Codex TUI progress spinner: "• Working (0s • esc to interrupt)",
-# "• Thinking (2s ...)", "• Starting script creation (10s • esc to interrupt)".
+# Codex TUI progress spinner: "• Working (0s • esc to interrupt)" or the
+# hollow in-progress variant "◦ Working (...)" used after some tool calls.
+# Also covers "• Thinking" and dynamic labels such as "• Starting script creation".
 # The prefix text varies but the "(Ns • esc to interrupt)" format is consistent.
 # Appears inline with --no-alt-screen when the agent is actively processing.
 # Must be checked before COMPLETED to avoid false positives (the • matches
 # ASSISTANT_PREFIX_PATTERN and the TUI footer › matches idle prompt).
-TUI_PROGRESS_PATTERN = r"•.*\(\d+s\s*•\s*esc to interrupt\)"
+TUI_PROGRESS_PATTERN = r"[•◦].*\(\d+s\s*•\s*esc to interrupt\)"
 
 # Workspace trust/approval prompt shown when Codex opens a new directory
 TRUST_PROMPT_PATTERN = r"allow Codex to work in this folder"
@@ -325,6 +326,10 @@ class CodexProvider(BaseProvider):
                 for key, value in profile.codexConfig.items():
                     command_parts.extend(["-c", _toml_override(key, value)])
 
+            resume_session_id = getattr(profile, "resumeSessionId", None)
+            if isinstance(resume_session_id, str) and resume_session_id:
+                command_parts.extend(["resume", resume_session_id])
+
         return shlex.join(command_parts)
 
     async def _handle_trust_prompt(self, timeout: float = 20.0) -> None:
@@ -515,6 +520,17 @@ class CodexProvider(BaseProvider):
         # If we're not at an idle prompt and we don't see explicit errors/permission prompts,
         # assume the CLI is still producing output.
         return TerminalStatus.PROCESSING
+
+    # Codex's inline TUI rewrites a fixed viewport. The raw pipe-pane stream
+    # retains historical spinner frames and can therefore stay PROCESSING after
+    # the rendered pane is visibly idle. Opt into StatusMonitor's pyte-composed
+    # viewport; get_status already understands the rendered Codex layout.
+    supports_screen_detection = True
+
+    def get_status_from_screen(self, screen_lines: list[str]) -> TerminalStatus:
+        if not screen_lines or not any(line.strip() for line in screen_lines):
+            return TerminalStatus.UNKNOWN
+        return self.get_status("\n".join(screen_lines))
 
     def extract_last_message_from_script(self, script_output: str) -> str:
         """Extract Codex's final response from terminal output.

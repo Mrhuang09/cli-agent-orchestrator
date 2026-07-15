@@ -60,6 +60,11 @@
       "type": "string",
       "enum": ["default", "acceptEdits", "plan", "auto", "bypassPermissions"]
     },
+    "resumeSessionId": {
+      "type": "string",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+      "description": "Exact persisted Codex or Claude session UUID to resume."
+    },
     "native_agent": {
       "type": "string"
     },

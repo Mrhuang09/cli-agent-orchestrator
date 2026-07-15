@@ -24,6 +24,7 @@ _DEPRECATED_FIELDS = {"autoApproveTools"}
 _VALID_TOOL_VOCAB: set[str] = set()
 for _tools in ROLE_TOOL_DEFAULTS.values():
     _VALID_TOOL_VOCAB.update(_tools)
+_VALID_TOOL_VOCAB.add("*")
 
 
 def _load_schema() -> dict:

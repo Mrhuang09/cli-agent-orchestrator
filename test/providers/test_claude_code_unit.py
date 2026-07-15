@@ -1109,6 +1109,26 @@ class TestClaudeCodeProviderMisc:
         assert "--permission-mode" not in command
 
     @patch("cli_agent_orchestrator.providers.claude_code.load_agent_profile")
+    def test_build_command_resumes_explicit_authority_session(self, mock_load):
+        mock_profile = MagicMock()
+        mock_profile.model = "sonnet"
+        mock_profile.system_prompt = None
+        mock_profile.mcpServers = None
+        mock_profile.permissionMode = "bypassPermissions"
+        mock_profile.resumeSessionId = "22222222-2222-4222-8222-222222222222"
+        mock_profile.native_agent = None
+        mock_load.return_value = mock_profile
+
+        provider = ClaudeCodeProvider(
+            "test123", "test-session", "window-0", "technical-director", allowed_tools=["*"]
+        )
+        command = provider._build_claude_command()
+
+        assert "claude --permission-mode bypassPermissions" in command
+        assert "--resume 22222222-2222-4222-8222-222222222222" in command
+        assert "--model sonnet" in command
+
+    @patch("cli_agent_orchestrator.providers.claude_code.load_agent_profile")
     def test_build_claude_command_with_system_prompt(self, mock_load):
         """Test building Claude command with system prompt."""
         mock_profile = MagicMock()

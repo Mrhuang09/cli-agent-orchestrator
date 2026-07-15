@@ -47,6 +47,17 @@ class AgentProfile(BaseModel):
     permissionMode: Optional[PermissionMode] = None
     native_agent: Optional[str] = None  # Claude Code native agent name (thin-wrapper mode)
 
+    # Codex/Claude Code authority-session bridge. When set, the provider must
+    # resume this exact session instead of creating a fresh conversation. Keep
+    # this canonical UUID-only: never accept --last/--continue-style selectors
+    # or arbitrary CLI fragments from profile frontmatter.
+    resumeSessionId: Optional[str] = Field(
+        default=None,
+        pattern=(
+            r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-" r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        ),
+    )
+
     # Codex-only. Names a [profiles.<name>] block in ~/.codex/config.toml.
     # Used as --profile <name> when yolo mode is not active; unrestricted
     # allowed tools still force --yolo. min_length=1 prevents an explicit

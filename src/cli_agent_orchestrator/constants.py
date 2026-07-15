@@ -22,6 +22,14 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _resolve_cao_home_dir() -> Path:
+    """Return CAO's state directory, honoring an explicit local-filesystem override."""
+    configured = os.environ.get("CAO_HOME_DIR")
+    if configured:
+        return Path(configured).expanduser()
+    return Path.home() / ".aws" / "cli-agent-orchestrator"
+
+
 # =============================================================================
 # Session Configuration
 # =============================================================================
@@ -48,8 +56,10 @@ TMUX_HISTORY_LINES = 200
 # =============================================================================
 # Application Directory Structure
 # =============================================================================
-# Base directory for all CAO data (~/.aws/cli-agent-orchestrator)
-CAO_HOME_DIR = Path.home() / ".aws" / "cli-agent-orchestrator"
+# Base directory for all CAO data (~/.aws/cli-agent-orchestrator by default).
+# Set CAO_HOME_DIR when the default home is on a filesystem that cannot host
+# POSIX FIFOs (for example, a drvfs-mounted Windows directory under WSL).
+CAO_HOME_DIR = _resolve_cao_home_dir()
 
 # Managed environment variable file
 CAO_ENV_FILE = CAO_HOME_DIR / ".env"

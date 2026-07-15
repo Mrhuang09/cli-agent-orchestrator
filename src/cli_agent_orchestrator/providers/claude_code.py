@@ -208,6 +208,10 @@ class ClaudeCodeProvider(BaseProvider):
         else:
             command_parts = ["claude", "--dangerously-skip-permissions"]
 
+        resume_session_id = getattr(profile, "resumeSessionId", None) if profile else None
+        if isinstance(resume_session_id, str) and resume_session_id:
+            command_parts.extend(["--resume", resume_session_id])
+
         # Route based on profile state
         native = getattr(profile, "native_agent", None) if profile else None
         if profile is not None and isinstance(native, str) and native:

@@ -247,6 +247,21 @@ class TestAddLocalCorsOrigins:
 class TestCaoHomeDir:
     """Tests for CAO home directory constants."""
 
+    def test_cao_home_dir_can_be_overridden(self, monkeypatch, tmp_path):
+        from cli_agent_orchestrator.constants import _resolve_cao_home_dir
+
+        runtime_home = tmp_path / "cao-runtime"
+        monkeypatch.setenv("CAO_HOME_DIR", str(runtime_home))
+
+        assert _resolve_cao_home_dir() == runtime_home
+
+    def test_cao_home_dir_defaults_under_user_home(self, monkeypatch):
+        from cli_agent_orchestrator.constants import _resolve_cao_home_dir
+
+        monkeypatch.delenv("CAO_HOME_DIR", raising=False)
+
+        assert _resolve_cao_home_dir() == Path.home() / ".aws" / "cli-agent-orchestrator"
+
     def test_cao_home_dir_is_under_aws_cli_agent_orchestrator(self):
         """Test that CAO_HOME_DIR is under ~/.aws/cli-agent-orchestrator."""
         from cli_agent_orchestrator.constants import CAO_HOME_DIR

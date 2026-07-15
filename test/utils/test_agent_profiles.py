@@ -671,3 +671,34 @@ class TestCodexConfigParsing:
         profile = parse_agent_profile_text(text, "codex-agent")
 
         assert profile.codexConfig is None
+
+
+class TestResumeSessionIdParsing:
+    def test_resume_session_id_parses(self):
+        text = (
+            "---\n"
+            "name: authority-agent\n"
+            "description: Persistent authority agent\n"
+            "provider: codex\n"
+            "resumeSessionId: 11111111-1111-4111-8111-111111111111\n"
+            "---\n"
+            "System prompt content"
+        )
+
+        profile = parse_agent_profile_text(text, "authority-agent")
+
+        assert profile.resumeSessionId == "11111111-1111-4111-8111-111111111111"
+
+    def test_resume_session_id_rejects_non_uuid(self):
+        text = (
+            "---\n"
+            "name: authority-agent\n"
+            "description: Invalid authority agent\n"
+            "provider: claude_code\n"
+            "resumeSessionId: $(touch /tmp/not-allowed)\n"
+            "---\n"
+            "System prompt content"
+        )
+
+        with pytest.raises(ValueError, match="resumeSessionId"):
+            parse_agent_profile_text(text, "authority-agent")

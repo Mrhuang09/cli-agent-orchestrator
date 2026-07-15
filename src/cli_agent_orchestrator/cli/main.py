@@ -4,6 +4,7 @@ from importlib.metadata import PackageNotFoundError, version
 
 import click
 
+from cli_agent_orchestrator.cli.commands.authority import authority
 from cli_agent_orchestrator.cli.commands.config import config
 from cli_agent_orchestrator.cli.commands.env import env
 from cli_agent_orchestrator.cli.commands.info import info
@@ -33,6 +34,7 @@ def cli():
 
 
 # Register commands
+cli.add_command(authority)
 cli.add_command(profile)
 cli.add_command(launch)
 cli.add_command(config)

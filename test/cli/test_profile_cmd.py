@@ -137,6 +137,22 @@ class TestValidateFrontmatter:
         meta = {"name": "x", "allowedTools": ["execute_bash", "@cao-mcp-server"]}
         assert _validate_frontmatter(meta) == []
 
+    def test_unrestricted_tool_marker_is_recognized(self):
+        meta = {"name": "x", "allowedTools": ["*"]}
+        assert _validate_frontmatter(meta) == []
+
+    def test_valid_resume_session_id(self):
+        meta = {
+            "name": "x",
+            "resumeSessionId": "11111111-1111-4111-8111-111111111111",
+        }
+        assert _validate_frontmatter(meta) == []
+
+    def test_invalid_resume_session_id(self):
+        meta = {"name": "x", "resumeSessionId": "not-a-uuid"}
+        messages = _validate_frontmatter(meta)
+        assert any("[error]" in message and "resumeSessionId" in message for message in messages)
+
 
 class TestAgentsListCommand:
     """Tests for cao agents list."""
