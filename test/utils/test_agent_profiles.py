@@ -17,6 +17,31 @@ from cli_agent_orchestrator.utils.agent_profiles import (
 class TestLoadAgentProfile:
     """Tests for load_agent_profile function."""
 
+    def test_explicit_agents_dir_overrides_same_named_global_profile(
+        self, tmp_path, monkeypatch
+    ):
+        """CAO_AGENTS_DIR is the authority bridge's highest-priority store."""
+        explicit_store = tmp_path / "authority-profiles"
+        explicit_store.mkdir()
+        (explicit_store / "project-director.md").write_text(
+            "---\nname: project-director\ndescription: Private\n---\nPrivate authority prompt"
+        )
+        local_store = tmp_path / "agent-store"
+        local_store.mkdir()
+        (local_store / "project-director.md").write_text(
+            "---\nname: project-director\ndescription: Global\n---\nGlobal prompt"
+        )
+        monkeypatch.setenv("CAO_AGENTS_DIR", str(explicit_store))
+        monkeypatch.setattr(
+            "cli_agent_orchestrator.utils.agent_profiles.LOCAL_AGENT_STORE_DIR",
+            local_store,
+        )
+
+        result = load_agent_profile("project-director")
+
+        assert result.description == "Private"
+        assert result.system_prompt == "Private authority prompt"
+
     def test_load_agent_profile_from_local_store(self, tmp_path, monkeypatch):
         """Test loading agent profile from the local store."""
         local_store = tmp_path / "agent-store"
@@ -187,6 +212,52 @@ class TestResolveProvider:
 
 class TestListAgentProfiles:
     """Tests for list_agent_profiles function."""
+
+    def test_list_uses_explicit_agents_dir_as_highest_priority(
+        self, tmp_path, monkeypatch
+    ):
+        """Listing and loading must agree on the explicit profile winner."""
+        from cli_agent_orchestrator.utils.agent_profiles import list_agent_profiles
+
+        explicit_store = tmp_path / "authority-profiles"
+        explicit_store.mkdir()
+        (explicit_store / "project-director.md").write_text(
+            "---\ndescription: Private\n---\nPrivate authority prompt"
+        )
+        local_store = tmp_path / "agent-store"
+        local_store.mkdir()
+        (local_store / "project-director.md").write_text(
+            "---\ndescription: Global\n---\nGlobal prompt"
+        )
+        empty_builtin = tmp_path / "empty-builtin"
+        empty_builtin.mkdir()
+        monkeypatch.setenv("CAO_AGENTS_DIR", str(explicit_store))
+        monkeypatch.setattr(
+            "cli_agent_orchestrator.utils.agent_profiles.LOCAL_AGENT_STORE_DIR",
+            local_store,
+        )
+        monkeypatch.setattr(
+            "cli_agent_orchestrator.services.settings_service.get_agent_dirs", lambda: {}
+        )
+        monkeypatch.setattr(
+            "cli_agent_orchestrator.services.settings_service.get_extra_agent_dirs",
+            lambda: [],
+        )
+        monkeypatch.setattr(
+            "cli_agent_orchestrator.utils.agent_profiles.resources.files",
+            lambda _pkg: empty_builtin,
+        )
+
+        profiles = list_agent_profiles()
+
+        assert profiles == [
+            {
+                "name": "project-director",
+                "description": "Private",
+                "source": "explicit",
+                "duplicated_in": ["local"],
+            }
+        ]
 
     @patch("cli_agent_orchestrator.services.settings_service.get_extra_agent_dirs", return_value=[])
     @patch("cli_agent_orchestrator.services.settings_service.get_agent_dirs")
