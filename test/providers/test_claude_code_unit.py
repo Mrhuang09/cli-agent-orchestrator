@@ -46,6 +46,85 @@ def _extract_mcp_config(command: str) -> dict:
 class TestClaudeCodeProviderInitialization:
     """Tests for ClaudeCodeProvider initialization."""
 
+    def test_finds_exact_project_background_agent_name(self):
+        provider = ClaudeCodeProvider("test123", "test-session", "window-0")
+        payload = [
+            {"sessionId": "other", "kind": "background", "name": "other"},
+            {"sessionId": "target", "kind": "background", "name": "target-name"},
+            {"sessionId": "interactive", "kind": "interactive"},
+        ]
+
+        with patch("subprocess.run") as run:
+            run.return_value = MagicMock(stdout=json.dumps(payload))
+            assert provider._find_background_agent_name("target") == "target-name"
+            command = run.call_args.args[0]
+            assert command[:3] == ["claude", "agents", "--json"]
+            assert "--cwd" in command
+
+    def test_agent_view_cwd_uses_private_authority_profile_root(self, tmp_path):
+        project = tmp_path / "project"
+        profiles = project / ".ai-collab-runtime" / "cao-authority" / "profiles"
+        profiles.mkdir(parents=True)
+
+        with patch.dict("os.environ", {"CAO_AGENTS_DIR": str(profiles)}):
+            assert ClaudeCodeProvider._agent_view_cwd() == project.resolve()
+
+    def test_refuses_target_outside_rendered_shortcut_range(self):
+        view = """Claude Code v2.1.210
+✻ first  preview
+✻ second  preview
+✻ third  preview
+✻ target  preview
+describe a task for a new session
+"""
+        with pytest.raises(ProviderError, match="shortcut range"):
+            ClaudeCodeProvider._agent_view_shortcut(view, "target")
+
+    def test_attaches_when_agent_view_initial_footer_hides_shortcuts(self):
+        provider = ClaudeCodeProvider("test123", "test-session", "window-0")
+        agent_view = """Claude Code v2.1.210
+✻ first  preview
+✻ target  preview
+describe a task for a new session
+"""
+        target_screen = "──────────────── [target] ──\n❯ "
+
+        with patch("cli_agent_orchestrator.providers.claude_code.get_backend") as backend:
+            backend.return_value.get_history.side_effect = [agent_view, target_screen]
+            provider._attach_background_agent("target", timeout=1)
+            backend.return_value.send_special_key.assert_called_once_with(
+                "test-session", "window-0", "M-2"
+            )
+
+    def test_verifies_bracketed_agent_name_against_decorated_session_header(self):
+        provider = ClaudeCodeProvider("test123", "test-session", "window-0")
+        agent_view = """Claude Code v2.1.210
+✻ [target]  preview
+describe a task for a new session
+"""
+        target_screen = "──────────────── [target] ──\n❯ "
+
+        with patch("cli_agent_orchestrator.providers.claude_code.get_backend") as backend:
+            backend.return_value.get_history.side_effect = [agent_view, target_screen]
+            provider._attach_background_agent("[target]", timeout=1)
+            backend.return_value.send_special_key.assert_called_once_with(
+                "test-session", "window-0", "M-1"
+            )
+
+    def test_cancels_if_agent_view_opens_wrong_session(self):
+        provider = ClaudeCodeProvider("test123", "test-session", "window-0")
+        agent_view = """Claude Code v2.1.210
+✻ target  preview
+describe a task for a new session
+"""
+        wrong_screen = "──────────────── [wrong] ──\n❯ "
+
+        with patch("cli_agent_orchestrator.providers.claude_code.get_backend") as backend:
+            backend.return_value.get_history.side_effect = [agent_view, wrong_screen]
+            with pytest.raises(ProviderError, match="attach cancelled"):
+                provider._attach_background_agent("target", timeout=1)
+            assert backend.return_value.send_special_key.call_args_list[-1].args[-1] == "Escape"
+
     @pytest.mark.asyncio
     @_PATCH_SETTINGS
     @patch("cli_agent_orchestrator.providers.claude_code.wait_for_shell")

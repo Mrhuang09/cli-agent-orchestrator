@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import shlex
+import subprocess
 import time
 from pathlib import Path
 from typing import List, Optional
@@ -160,8 +161,42 @@ class ClaudeCodeProvider(BaseProvider):
         super().__init__(terminal_id, session_name, window_name, allowed_tools, skill_prompt)
         self._initialized = False
         self._agent_profile = agent_profile
+        self._background_agent_name: Optional[str] = None
+        self._profile_loaded = False
+        self._profile = None
         # Native-status dispatch tracking (_task_dispatched + flush-wait timers)
         # lives on BaseProvider and is consumed by _resolve_native_status().
+
+    def _load_profile(self):
+        """Load the optional CAO profile once for all initialization paths."""
+        if self._profile_loaded:
+            return self._profile
+        self._profile_loaded = True
+        if self._agent_profile is None:
+            return None
+        try:
+            self._profile = load_agent_profile(self._agent_profile)
+        except FileNotFoundError:
+            self._profile = None
+        except Exception as exc:
+            raise ProviderError(
+                f"Failed to load agent profile '{self._agent_profile}': {exc}"
+            ) from exc
+        return self._profile
+
+    @staticmethod
+    def _agent_view_cwd() -> Path:
+        """Return the authority project's cwd, not the server process cwd."""
+        explicit_agents_dir = os.environ.get("CAO_AGENTS_DIR")
+        if explicit_agents_dir:
+            profiles_dir = Path(explicit_agents_dir).expanduser().resolve()
+            if (
+                profiles_dir.name == "profiles"
+                and profiles_dir.parent.name == "cao-authority"
+                and profiles_dir.parent.parent.name == ".ai-collab-runtime"
+            ):
+                return profiles_dir.parent.parent.parent
+        return Path.cwd()
 
     def _build_claude_command(self) -> str:
         """Build Claude Code command with agent profile if provided.
@@ -182,14 +217,7 @@ class ClaudeCodeProvider(BaseProvider):
         # (supervisor and worker) is redundant and blocks handoff/assign flows.
         yolo = bool(self._allowed_tools and "*" in self._allowed_tools)
 
-        profile = None
-        if self._agent_profile is not None:
-            try:
-                profile = load_agent_profile(self._agent_profile)
-            except FileNotFoundError:
-                profile = None
-            except Exception as e:
-                raise ProviderError(f"Failed to load agent profile '{self._agent_profile}': {e}")
+        profile = self._load_profile()
 
         # Determine permission mode for the base command.
         # Priority: explicit permissionMode > yolo/root detection > default yolo.
@@ -304,6 +332,149 @@ class ClaudeCodeProvider(BaseProvider):
         )
         return f"{unset_cmd}; {claude_cmd}"
 
+    def _find_background_agent_name(self, resume_session_id: str) -> Optional[str]:
+        """Return the exact Agent View name for an occupied background session.
+
+        Claude Code 2.1.210 refuses ``--resume`` when the requested session is
+        still registered as a background agent, even when that agent is done and
+        idle.  Agent View is the supported way to attach to that exact session.
+        JSON order is *not* the TUI shortcut order, so this method only resolves
+        session identity to its exact display name.  The shortcut is derived
+        later from the rendered Agent View rows.
+        """
+        try:
+            result = subprocess.run(
+                ["claude", "agents", "--json", "--cwd", str(self._agent_view_cwd())],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            agents = json.loads(result.stdout)
+        except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as exc:
+            logger.warning("Could not inspect Claude background agents: %s", exc)
+            return None
+
+        if not isinstance(agents, list):
+            return None
+
+        for agent in agents:
+            if not isinstance(agent, dict) or agent.get("sessionId") != resume_session_id:
+                continue
+            if agent.get("kind") != "background":
+                return None
+            name = agent.get("name")
+            if not isinstance(name, str) or not name.strip():
+                raise ProviderError("Exact Claude background session has no usable display name")
+            return name.strip()
+        return None
+
+    @staticmethod
+    def _agent_view_shortcut(clean_output: str, target_name: str) -> int:
+        """Resolve an exact display name against the currently rendered rows."""
+        view = clean_output.rsplit("Claude Code v", 1)[-1]
+        view = view.split("describe a task for a new session", 1)[0]
+        rows: list[str] = []
+        for line in view.splitlines():
+            match = re.match(r"^\s*[✻∙]\s+(.+?)(?:\s{2,}|$)", line)
+            if match:
+                rows.append(match.group(1).strip())
+
+        matches = [index for index, name in enumerate(rows, start=1) if name == target_name]
+        if len(matches) != 1:
+            raise ProviderError(
+                "Exact Claude authority session name is missing or ambiguous in Agent View; "
+                "refusing to guess"
+            )
+        shortcut = matches[0]
+        if shortcut > 3:
+            raise ProviderError(
+                "Exact Claude authority session is outside Agent View's Alt+1..3 "
+                "shortcut range; refusing to guess"
+            )
+        return shortcut
+
+    def _build_agent_view_command(self, standard_command: str) -> str:
+        """Build Agent View launch command for exact background-session attach.
+
+        ``_build_claude_command`` is called first so the profile's private MCP
+        file is materialized.  Agent View does not accept append-system-prompt,
+        but it does accept the permission/model/MCP flags needed while opening
+        the already-persisted authority conversation.
+        """
+        prefix = standard_command.split("; ", 1)[0]
+        profile = self._load_profile()
+        command_parts = ["claude", "agents", "--cwd", str(self._agent_view_cwd())]
+
+        if profile and profile.permissionMode:
+            command_parts.extend(["--permission-mode", profile.permissionMode])
+        elif self._allowed_tools and "*" in self._allowed_tools:
+            command_parts.append("--dangerously-skip-permissions")
+
+        if profile and profile.model:
+            command_parts.extend(["--model", profile.model])
+
+        mcp_file = CAO_HOME_DIR / "tmp" / f"{self.terminal_id}.mcp.json"
+        if profile and profile.mcpServers and mcp_file.exists():
+            command_parts.extend(["--mcp-config", str(mcp_file), "--strict-mcp-config"])
+
+        return f"{prefix}; {shlex.join(command_parts)}"
+
+    def _attach_background_agent(self, target_name: str, timeout: float) -> None:
+        """Open the exact project-local Agent View row and clear resume choice."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            output = get_backend().get_history(self.session_name, self.window_name) or ""
+            clean_output = strip_terminal_escapes(output)
+            agent_view_ready = (
+                "alt+1-3 to open" in clean_output.lower()
+                or (
+                    "Claude Code v" in clean_output
+                    and "describe a task for a new session" in clean_output
+                )
+            )
+            if agent_view_ready:
+                shortcut = self._agent_view_shortcut(clean_output, target_name)
+                get_backend().send_special_key(
+                    self.session_name, self.window_name, f"M-{shortcut}"
+                )
+                break
+            time.sleep(0.5)
+        else:
+            raise TimeoutError("Claude Agent View did not become ready for exact-session attach")
+
+        # Verify the opened screen's session header before accepting any prompt.
+        # This catches JSON/TUI ordering drift before a message can reach the
+        # wrong conversation.
+        choice_deadline = min(deadline, time.time() + 10)
+        while time.time() < choice_deadline:
+            output = get_backend().get_history(self.session_name, self.window_name) or ""
+            clean_output = strip_terminal_escapes(output)
+            headers = re.findall(r"\[([^\]\n]+)\]\s*─", clean_output)
+            if headers:
+                opened_name = headers[-1].strip()
+                expected_header = (
+                    target_name[1:-1].strip()
+                    if target_name.startswith("[") and target_name.endswith("]")
+                    else target_name
+                )
+                if opened_name != expected_header:
+                    get_backend().send_special_key(
+                        self.session_name, self.window_name, "Escape"
+                    )
+                    raise ProviderError(
+                        "Claude Agent View opened a different session; attach cancelled"
+                    )
+                # Long sessions may ask whether to resume from the saved summary.
+                # The first option is the recommended, non-forking continuation.
+                if "Resume from summary (recommended)" in clean_output:
+                    get_backend().send_special_key(
+                        self.session_name, self.window_name, "Enter"
+                    )
+                return
+            time.sleep(0.5)
+        raise TimeoutError("Could not verify exact Claude session header after Agent View attach")
+
     @staticmethod
     def _ensure_skip_bypass_prompt_setting() -> None:
         """Ensure ``skipDangerousModePermissionPrompt`` is set in settings.
@@ -415,14 +586,27 @@ class ClaudeCodeProvider(BaseProvider):
         # Prevent bypass permissions dialog from appearing (settings-based fix).
         self._ensure_skip_bypass_prompt_setting()
 
-        # Build properly escaped command string
+        # Build properly escaped command string.  If the exact persisted session
+        # is currently owned by Claude's background-agent daemon, attach through
+        # Agent View instead of forking or selecting another recent session.
         command = self._build_claude_command()
+        profile = self._load_profile()
+        resume_session_id = getattr(profile, "resumeSessionId", None) if profile else None
+        if isinstance(resume_session_id, str) and resume_session_id:
+            self._background_agent_name = self._find_background_agent_name(
+                resume_session_id
+            )
+            if self._background_agent_name is not None:
+                command = self._build_agent_view_command(command)
 
         # Send Claude Code command using the backend. Arm the StatusMonitor
         # stickiness gate so the launching command can drive a fresh
         # PROCESSING transition past any stale ready latch.
         status_monitor.notify_input_sent(self.terminal_id)
         get_backend().send_keys(self.session_name, self.window_name, command)
+
+        if self._background_agent_name is not None:
+            self._attach_background_agent(self._background_agent_name, init_timeout)
 
         # Handle startup prompts (bypass permissions + workspace trust)
         self._handle_startup_prompts()
