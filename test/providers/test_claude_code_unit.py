@@ -1823,6 +1823,25 @@ class TestClaudeCodeScreenDetection:
     def test_empty_screen_is_unknown(self):
         assert self._p().get_status_from_screen(["", "", ""]) == TerminalStatus.UNKNOWN
 
+    def test_api_retry_row_is_processing_even_with_ready_box(self):
+        screen = [
+            "✻ API error · Retrying in 0s · attempt 1/10",
+            "─" * 60,
+            "❯ ",
+            "─" * 60,
+        ]
+        assert self._p().get_status_from_screen(screen) == TerminalStatus.PROCESSING
+
+    def test_raw_api_retry_row_is_processing_after_old_completion(self):
+        output = (
+            "✻ Crunched for 5m 29s\n"
+            + "─" * 60
+            + "\n❯ \n"
+            + "─" * 60
+            + "\n✻ API error · Retrying in 0s · attempt 1/10\n"
+        )
+        assert self._p().get_status(output) == TerminalStatus.PROCESSING
+
 
 class TestClaudeCodeBackgroundTaskNotCompleted:
     """A backgrounded task must not read as COMPLETED (GH #392).

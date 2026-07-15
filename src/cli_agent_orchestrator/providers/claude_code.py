@@ -64,6 +64,16 @@ ACTIVE_TOOL_ROW_PATTERN = re.compile(
     r"(?:shell[ \t]+commands?|commands?|tools?)(?:\u2026|\.{3})?[ \t]*$",
     re.MULTILINE,
 )
+# Claude can temporarily replace its spinner/tool row with an explicit API
+# retry countdown while the turn is still live, e.g.
+# ``✻ API error · Retrying in 0s · attempt 1/10``. The boxed input prompt
+# remains visible during this state, so without this exact row the viewport
+# detector reports COMPLETED and the ready latch hides the active retry.
+API_RETRY_ROW_PATTERN = re.compile(
+    r"^[ \t]*[✶✢✽✻✳·*][ \t]+API error[ \t]+·[ \t]+Retrying in[ \t]+"
+    r"\d+(?:\.\d+)?s[ \t]+·[ \t]+attempt[ \t]+\d+/\d+[ \t]*$",
+    re.MULTILINE,
+)
 # Structural PROCESSING indicator (reference pattern — get_status uses an
 # inline last-separator-anchored version to avoid false positives from
 # mid-conversation compaction events like "✢ Compacting conversation…"):
@@ -747,6 +757,9 @@ class ClaudeCodeProvider(BaseProvider):
         last_active_tool = None
         for m in ACTIVE_TOOL_ROW_PATTERN.finditer(output):
             last_active_tool = m
+        for m in API_RETRY_ROW_PATTERN.finditer(output):
+            if last_active_tool is None or m.start() > last_active_tool.start():
+                last_active_tool = m
         if last_active_tool is not None and not any(
             marker.start() > last_active_tool.start()
             for marker in (last_completion, last_response)
@@ -893,6 +906,8 @@ class ClaudeCodeProvider(BaseProvider):
         if any(NEW_TUI_BOX_SPINNER_PATTERN.search(ln) for ln in bottom):
             return TerminalStatus.PROCESSING
         if any(ACTIVE_TOOL_ROW_PATTERN.search(ln) for ln in bottom):
+            return TerminalStatus.PROCESSING
+        if any(API_RETRY_ROW_PATTERN.search(ln) for ln in bottom):
             return TerminalStatus.PROCESSING
 
         bottom_joined = "\n".join(bottom)
