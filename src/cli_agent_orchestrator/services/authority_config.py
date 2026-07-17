@@ -133,7 +133,9 @@ def _profile_text(config: AuthorityConfig, provider: str) -> str:
         role_text = (
             "Continue this persisted project-director conversation. Direct the technical "
             "director through CAO messaging, follow the project's governance files, and "
-            "report only evidence-backed results."
+            "report only evidence-backed results. Use `cao authority send --from "
+            "project-director --to technical-director` for reliable callbacks; MCP "
+            "messaging is optional."
         )
     elif provider == "claude_code":
         name = TECHNICAL_PROFILE_NAME
@@ -145,7 +147,9 @@ def _profile_text(config: AuthorityConfig, provider: str) -> str:
         role_text = (
             "Continue this persisted technical-director conversation. Work under the "
             "project director, organize execution roles, and return evidence through CAO "
-            "messaging while following the project's governance files."
+            "messaging while following the project's governance files. Use `cao authority "
+            "send --from technical-director --to project-director` for reliable callbacks; "
+            "MCP messaging is optional."
         )
     else:  # pragma: no cover - internal caller contract
         raise ValueError(f"unsupported authority provider: {provider}")

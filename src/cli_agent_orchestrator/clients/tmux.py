@@ -5,7 +5,7 @@ import os
 import subprocess
 import time
 import uuid
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import libtmux
 
@@ -21,6 +21,8 @@ logger = logging.getLogger(__name__)
 
 class TmuxClient:
     """Simplified tmux client for basic operations."""
+
+    _DEFAULT_HISTORY_LIMIT = 20_000
 
     def __init__(self) -> None:
         self.server = libtmux.Server()
@@ -122,6 +124,23 @@ class TmuxClient:
                 continue
             environment[key] = value
 
+    def _configure_server_interaction_defaults(self) -> None:
+        """Configure durable interactive defaults before creating a pane.
+
+        ``history-limit`` only applies to panes created after the option is
+        set, so this must run before ``new_session``.  Both commands are
+        idempotent and intentionally fail the session creation if tmux cannot
+        apply them; silently creating a non-scrollable CAO session would make
+        behavior depend on the operator's local tmux configuration.
+        """
+        self.server.cmd("set-option", "-g", "mouse", "on")
+        self.server.cmd(
+            "set-window-option",
+            "-g",
+            "history-limit",
+            str(self._DEFAULT_HISTORY_LIMIT),
+        )
+
     def create_session(
         self,
         session_name: str,
@@ -133,6 +152,8 @@ class TmuxClient:
         """Create detached tmux session with initial window and return window name."""
         try:
             working_directory = self._resolve_and_validate_working_directory(working_directory)
+
+            self._configure_server_interaction_defaults()
 
             # Only pass essential env vars to avoid tmux "command too long"
             essential_keys = {
@@ -580,6 +601,29 @@ class TmuxClient:
             return None
         except Exception as e:
             logger.error(f"Failed to get pane command for {session_name}:{window_name}: {e}")
+            return None
+
+    def get_pane_size(self, session_name: str, window_name: str) -> Optional[Tuple[int, int]]:
+        """Get the active pane's ``(columns, rows)``. None if unresolvable."""
+        try:
+            session = self.server.sessions.get(session_name=session_name)
+            if not session:
+                return None
+            window = session.windows.get(window_name=window_name)
+            if not window:
+                return None
+            pane = window.active_pane
+            if pane:
+                result = pane.cmd("display-message", "-p", "#{pane_width}x#{pane_height}")
+                if result.stdout:
+                    cols_s, _, rows_s = result.stdout[0].strip().partition("x")
+                    if cols_s.isdigit() and rows_s.isdigit():
+                        cols, rows = int(cols_s), int(rows_s)
+                        if cols > 0 and rows > 0:
+                            return cols, rows
+            return None
+        except Exception as e:
+            logger.error(f"Failed to get pane size for {session_name}:{window_name}: {e}")
             return None
 
     def pipe_pane(self, session_name: str, window_name: str, file_path: str) -> None:

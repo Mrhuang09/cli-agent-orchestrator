@@ -70,6 +70,25 @@ cao authority attach         # attach again later
 cao authority stop           # stop only the owned session/server
 ```
 
+Messages use stable authority roles rather than transient terminal IDs:
+
+```bash
+# Run inside the project-director terminal (sender inferred from CAO_TERMINAL_ID)
+cao authority send --to technical-director "Review the current contract"
+
+# Run from an ordinary shell (sender must be explicit)
+cao authority send \
+  --project-root /path/to/project \
+  --from technical-director \
+  --to project-director \
+  "Review completed; evidence follows"
+```
+
+The command reports durable inbox acceptance as `pending`. That is not task completion.
+`--wait-delivered` waits only until CAO delivers the message to the receiving terminal; the
+receiver must still return a correlated acknowledgement for a completed handoff. MCP messaging
+is optional and is not required for authority bridge correctness.
+
 For automation or diagnostics:
 
 ```bash
@@ -83,6 +102,11 @@ cao authority status --json
 - the legacy `director_mailbox watch` executor is running;
 - port 9889 belongs to another service or CAO project;
 - CAO state is on Windows drvfs/9p instead of a POSIX filesystem.
+
+Every successful start writes a private `state/authority-run.json` manifest. It binds exactly one
+current project-director terminal and one current technical-director terminal to a new generation.
+`status`, `attach`, `send`, and `stop` resolve through this manifest, so historical SQLite terminal
+rows cannot become the current conductor or receive authority messages.
 
 On WSL, keep the project and `.ai-collab-runtime` on the Linux filesystem (for example under
 `/home/...`), not `/mnt/c/...`; CAO uses POSIX FIFOs and file permissions.
@@ -110,5 +134,15 @@ credential disclosure, or decisions reserved for the human owner. Session UUIDs,
 logs, and generated profiles must stay out of public repositories.
 
 `stop` reads the saved server PID and verifies both the executable and the project's
-`CAO_HOME_DIR` marker before sending a signal. It will not kill an unverified process merely
-because it occupies the expected PID.
+`CAO_HOME_DIR` marker before sending a signal. It waits for the exact tmux session, owned server
+PID, and port to disappear before recording `stopped`; it will not report success while owned
+runtime residue remains. It will not kill an unverified process merely because it occupies the
+expected PID.
+
+## Exclusive authority work surface
+
+The persisted Codex or Claude UUID must be fully exited from every other CLI, desktop, IDE, or
+app-server surface before `start`. Merely leaving another copy idle is not sufficient. While
+authority mode is active, use the attached CAO project-director terminal as the project-director
+work surface. Process inspection cannot prove that a desktop/IDE app-server has released a
+conversation, so this cutover remains an explicit operator responsibility.

@@ -1,6 +1,7 @@
 """Agent profile utilities."""
 
 import logging
+import os
 from importlib import resources
 from pathlib import Path
 from typing import Dict, List, Set
@@ -13,6 +14,18 @@ from cli_agent_orchestrator.utils.env import resolve_env_vars
 from cli_agent_orchestrator.utils.paths import normalized_path
 
 logger = logging.getLogger(__name__)
+
+
+def _explicit_agents_dir() -> Path | None:
+    """Return the process-local profile override, if configured.
+
+    ``cao-server --agents-dir`` publishes this value through
+    ``CAO_AGENTS_DIR``.  Read it dynamically instead of caching it at module
+    import time: ``api.main`` applies the CLI override after importing this
+    module, before the server starts accepting requests.
+    """
+    raw = os.environ.get("CAO_AGENTS_DIR", "").strip()
+    return Path(raw).expanduser() if raw else None
 
 
 def _validate_agent_name(agent_name: str) -> None:
@@ -122,7 +135,16 @@ def list_agent_profiles() -> List[Dict]:
     disabled = {normalized_path(d) for d in get_disabled_agent_dirs()}
     scanned_paths: Set[str] = set()
 
-    # 1. Local agent store (~/.aws/cli-agent-orchestrator/agent-store/).
+    # 1. Explicit process-local override.  This is intentionally first: an
+    # authority bridge must load the private profiles selected by
+    # ``--agents-dir`` rather than a same-named profile from a global store.
+    explicit_dir = _explicit_agents_dir()
+    if explicit_dir is not None:
+        explicit_norm = normalized_path(explicit_dir)
+        _scan_directory(explicit_dir, "explicit", profiles, name_sources)
+        scanned_paths.add(explicit_norm)
+
+    # 2. Local agent store (~/.aws/cli-agent-orchestrator/agent-store/).
     # It shares a path with the claude_code/codex default, so honour the
     # disable toggle here too — otherwise disabling that default wouldn't hide
     # its profiles.
@@ -131,7 +153,7 @@ def list_agent_profiles() -> List[Dict]:
         _scan_directory(LOCAL_AGENT_STORE_DIR, "local", profiles, name_sources)
         scanned_paths.add(local_norm)
 
-    # 2. Provider-specific directories (from settings)
+    # 3. Provider-specific directories (from settings)
     agent_dirs = get_agent_dirs()
     provider_source_labels = {
         "kiro_cli": "kiro",
@@ -147,7 +169,7 @@ def list_agent_profiles() -> List[Dict]:
         _scan_directory(Path(dir_path), label, profiles, name_sources)
         scanned_paths.add(norm)
 
-    # 3. Extra user-added directories
+    # 4. Extra user-added directories
     for extra_dir in get_extra_agent_dirs():
         norm = normalized_path(extra_dir)
         if norm in disabled or norm in scanned_paths:
@@ -155,7 +177,7 @@ def list_agent_profiles() -> List[Dict]:
         _scan_directory(Path(extra_dir), "custom", profiles, name_sources)
         scanned_paths.add(norm)
 
-    # 4. Built-in agent store — scanned LAST so on-disk copies win (matches
+    # 5. Built-in agent store — scanned LAST so on-disk copies win (matches
     # _read_agent_profile_source's lookup order).
     try:
         agent_store = resources.files("cli_agent_orchestrator.agent_store")
@@ -209,10 +231,11 @@ def _read_agent_profile_source(agent_name: str) -> str:
     """Locate an agent profile across configured stores and return the raw text.
 
     Search order:
-    1. Local store: ~/.aws/cli-agent-orchestrator/agent-store/{name}.md
-    2. Provider-specific directories (flat {name}.md or {name}/agent.md)
-    3. Extra user-added directories (flat {name}.md or {name}/agent.md)
-    4. Built-in store (packaged with CAO)
+    1. Explicit ``CAO_AGENTS_DIR`` override (flat or nested profile)
+    2. Local store: ~/.aws/cli-agent-orchestrator/agent-store/{name}.md
+    3. Provider-specific directories (flat {name}.md or {name}/agent.md)
+    4. Extra user-added directories (flat {name}.md or {name}/agent.md)
+    5. Built-in store (packaged with CAO)
 
     Shared by ``load_agent_profile`` (which parses the text into an
     ``AgentProfile``) and the install service (which writes the raw text to
@@ -226,21 +249,6 @@ def _read_agent_profile_source(agent_name: str) -> str:
         get_extra_agent_dirs,
     )
 
-    # Honour the disable toggle on the load path too, so disabling a directory
-    # actually swaps which same-named profile wins (GH #280), not just what the
-    # Settings list shows.
-    disabled = {normalized_path(d) for d in get_disabled_agent_dirs()}
-
-    # Every filesystem read below goes through _safe_join so the path is
-    # normalised and verified to stay inside its configured root. This is
-    # belt-and-braces on top of _validate_agent_name above — the name check
-    # rejects obvious traversal inputs, and _safe_join additionally blocks
-    # anything that sneaks past (e.g. symlinks resolving outside the root).
-    if normalized_path(LOCAL_AGENT_STORE_DIR) not in disabled:
-        local_profile = _safe_join(LOCAL_AGENT_STORE_DIR, f"{agent_name}.md")
-        if local_profile is not None and local_profile.exists():
-            return local_profile.read_text(encoding="utf-8")
-
     def _lookup_in_directory(directory: Path) -> str | None:
         if not directory.exists():
             return None
@@ -251,6 +259,27 @@ def _read_agent_profile_source(agent_name: str) -> str:
         if nested is not None and nested.exists():
             return nested.read_text(encoding="utf-8")
         return None
+
+    # Every filesystem read below goes through _safe_join so the path is
+    # normalised and verified to stay inside its configured root. This is
+    # belt-and-braces on top of _validate_agent_name above — the name check
+    # rejects obvious traversal inputs, and _safe_join additionally blocks
+    # anything that sneaks past (e.g. symlinks resolving outside the root).
+    explicit_dir = _explicit_agents_dir()
+    if explicit_dir is not None:
+        found = _lookup_in_directory(explicit_dir)
+        if found is not None:
+            return found
+
+    # Honour the disable toggle on the remaining settings-controlled paths.
+    # An explicit CLI override is intentionally not affected by those global
+    # settings; it is the authority bridge's selected private profile root.
+    disabled = {normalized_path(d) for d in get_disabled_agent_dirs()}
+
+    if normalized_path(LOCAL_AGENT_STORE_DIR) not in disabled:
+        local_profile = _safe_join(LOCAL_AGENT_STORE_DIR, f"{agent_name}.md")
+        if local_profile is not None and local_profile.exists():
+            return local_profile.read_text(encoding="utf-8")
 
     for dir_path in get_agent_dirs().values():
         if normalized_path(dir_path) in disabled:

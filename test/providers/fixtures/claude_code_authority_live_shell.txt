@@ -1,0 +1,8 @@
+● I will verify the repository before reporting.
+
+  Running 1 shell command...
+
+──────────────────────────────
+❯
+──────────────────────────────
+  bypass permissions on · esc to interrupt

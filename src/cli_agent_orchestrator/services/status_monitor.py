@@ -7,7 +7,7 @@ Publisher: terminal.{id}.status
 import asyncio
 import logging
 import threading
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, cast
 
 from cli_agent_orchestrator.constants import (
     CAO_PYTE_STATUS,
@@ -75,7 +75,7 @@ class StatusMonitor:
         # on two edges only — rising (output resumed) and quiescence (output
         # stopped for PYTE_QUIESCENCE_DELAY_S) — never mid-burst, which is what
         # keeps status flap-free.
-        self._screens: Dict[str, Tuple[object, object]] = {}
+        self._screens: Dict[str, Tuple[Any, Any]] = {}
         self._bursting: Dict[str, bool] = {}
         # Pending quiescence-detect timer handle per terminal (loop.call_later).
         self._quiesce_handle: Dict[str, asyncio.TimerHandle] = {}
@@ -262,14 +262,14 @@ class StatusMonitor:
             if provider is None:
                 return TerminalStatus.UNKNOWN
             try:
-                return provider.get_status(fallback_buffer)
+                return cast(TerminalStatus, provider.get_status(fallback_buffer))
             except Exception:
                 logger.exception("Error detecting fallback status for %s", terminal_id)
                 return TerminalStatus.UNKNOWN
         if not lines or provider is None:
             return TerminalStatus.UNKNOWN
         try:
-            return provider.get_status_from_screen(lines)
+            return cast(TerminalStatus, provider.get_status_from_screen(lines))
         except Exception:
             # Full traceback: screen detectors are new and can trip on
             # unexpected TUI frames; the stack makes such regressions debuggable.
@@ -297,9 +297,18 @@ class StatusMonitor:
             was_bursting = self._bursting.get(terminal_id, False)
             self._bursting[terminal_id] = True
             handle = self._quiesce_handle.pop(terminal_id, None)
+            last_status = self._last_status.get(terminal_id)
+            armed = self._allow_processing_revert.get(terminal_id, False)
         self._cancel_quiesce_handle(handle)
 
-        if not was_bursting:
+        # A newly delivered input can begin while the TUI is already in a
+        # continuous repaint burst. The first rising-edge frame may still show
+        # the prior COMPLETED prompt; if we then wait for quiescence, a live
+        # spinner/tool row can run for minutes while the cache remains ready.
+        # While the input gate is armed and the cached state is ready, inspect
+        # every frame until genuine PROCESSING is observed. _apply_detection
+        # consumes the arm at that transition, returning to normal debounce.
+        if not was_bursting or (armed and last_status in _STICKY_READY_STATUSES):
             self._apply_detection(terminal_id, self._detect_screen(terminal_id, provider))
 
         self._arm_quiesce_timer(loop, terminal_id, self._on_screen_quiescent, provider)

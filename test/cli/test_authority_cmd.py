@@ -72,3 +72,38 @@ def test_authority_start_delegates_to_runtime(tmp_path: Path):
     assert result.exit_code == 0, result.output
     runtime_cls.assert_called_once_with(project.resolve())
     runtime_cls.return_value.start.assert_called_once_with(attach=False)
+
+
+def test_authority_send_requires_roles_and_reports_queue_acceptance(tmp_path: Path):
+    project = tmp_path / "project"
+    project.mkdir()
+    runner = CliRunner()
+
+    with patch("cli_agent_orchestrator.cli.commands.authority.AuthorityRuntime") as runtime_cls:
+        runtime_cls.return_value.send.return_value = {
+            "message_id": 41,
+            "queue_status": "pending",
+        }
+        result = runner.invoke(
+            authority,
+            [
+                "send",
+                "review S1",
+                "--project-root",
+                str(project),
+                "--from",
+                "project-director",
+                "--to",
+                "technical-director",
+            ],
+        )
+
+    assert result.exit_code == 0, result.output
+    assert "message 41 accepted: pending" in result.output
+    runtime_cls.return_value.send.assert_called_once_with(
+        to_role="technical-director",
+        from_role="project-director",
+        message="review S1",
+        wait_delivered=False,
+        timeout=30.0,
+    )

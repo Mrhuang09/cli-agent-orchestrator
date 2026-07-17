@@ -726,6 +726,12 @@ class TestCodexProviderCodexConfig:
 
 
 class TestCodexProviderStatusDetection:
+    def test_authority_paste_uses_single_enter_after_settle_delay(self):
+        provider = CodexProvider("test1234", "test-session", "window-0")
+
+        assert provider.paste_enter_count == 1
+        assert provider.paste_submit_delay == 1.0
+
     def test_get_status_idle(self):
         output = load_fixture("codex_idle_output.txt")
 

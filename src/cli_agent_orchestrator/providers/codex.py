@@ -532,6 +532,29 @@ class CodexProvider(BaseProvider):
             return TerminalStatus.UNKNOWN
         return self.get_status("\n".join(screen_lines))
 
+    @property
+    def paste_enter_count(self) -> int:
+        """Codex submits a bracketed paste with one Enter.
+
+        The base provider's double-Enter sequence is for TUIs that first turn
+        Enter into a literal newline.  Codex's composer uses Enter as submit;
+        sending a second Enter races the post-submit repaint and can leave an
+        authority message visible in the composer without starting a turn.
+        """
+        return 1
+
+    @property
+    def paste_submit_delay(self) -> float:
+        """Allow Codex's composer to settle a large bracketed paste.
+
+        Authority messages are commonly multi-line and can exceed 1 KiB.  A
+        0.3s submit raced the paste repaint in a live authority session: CAO
+        marked the inbox row delivered, but Codex stayed ready until later
+        keyboard activity.  One second keeps submission deterministic without
+        changing busy-terminal delivery semantics.
+        """
+        return 1.0
+
     def extract_last_message_from_script(self, script_output: str) -> str:
         """Extract Codex's final response from terminal output.
 

@@ -46,6 +46,85 @@ def _extract_mcp_config(command: str) -> dict:
 class TestClaudeCodeProviderInitialization:
     """Tests for ClaudeCodeProvider initialization."""
 
+    def test_finds_exact_project_background_agent_name(self):
+        provider = ClaudeCodeProvider("test123", "test-session", "window-0")
+        payload = [
+            {"sessionId": "other", "kind": "background", "name": "other"},
+            {"sessionId": "target", "kind": "background", "name": "target-name"},
+            {"sessionId": "interactive", "kind": "interactive"},
+        ]
+
+        with patch("subprocess.run") as run:
+            run.return_value = MagicMock(stdout=json.dumps(payload))
+            assert provider._find_background_agent_name("target") == "target-name"
+            command = run.call_args.args[0]
+            assert command[:3] == ["claude", "agents", "--json"]
+            assert "--cwd" in command
+
+    def test_agent_view_cwd_uses_private_authority_profile_root(self, tmp_path):
+        project = tmp_path / "project"
+        profiles = project / ".ai-collab-runtime" / "cao-authority" / "profiles"
+        profiles.mkdir(parents=True)
+
+        with patch.dict("os.environ", {"CAO_AGENTS_DIR": str(profiles)}):
+            assert ClaudeCodeProvider._agent_view_cwd() == project.resolve()
+
+    def test_refuses_target_outside_rendered_shortcut_range(self):
+        view = """Claude Code v2.1.210
+✻ first  preview
+✻ second  preview
+✻ third  preview
+✻ target  preview
+describe a task for a new session
+"""
+        with pytest.raises(ProviderError, match="shortcut range"):
+            ClaudeCodeProvider._agent_view_shortcut(view, "target")
+
+    def test_attaches_when_agent_view_initial_footer_hides_shortcuts(self):
+        provider = ClaudeCodeProvider("test123", "test-session", "window-0")
+        agent_view = """Claude Code v2.1.210
+✻ first  preview
+✻ target  preview
+describe a task for a new session
+"""
+        target_screen = "──────────────── [target] ──\n❯ "
+
+        with patch("cli_agent_orchestrator.providers.claude_code.get_backend") as backend:
+            backend.return_value.get_history.side_effect = [agent_view, target_screen]
+            provider._attach_background_agent("target", timeout=1)
+            backend.return_value.send_special_key.assert_called_once_with(
+                "test-session", "window-0", "M-2"
+            )
+
+    def test_verifies_bracketed_agent_name_against_decorated_session_header(self):
+        provider = ClaudeCodeProvider("test123", "test-session", "window-0")
+        agent_view = """Claude Code v2.1.210
+✻ [target]  preview
+describe a task for a new session
+"""
+        target_screen = "──────────────── [target] ──\n❯ "
+
+        with patch("cli_agent_orchestrator.providers.claude_code.get_backend") as backend:
+            backend.return_value.get_history.side_effect = [agent_view, target_screen]
+            provider._attach_background_agent("[target]", timeout=1)
+            backend.return_value.send_special_key.assert_called_once_with(
+                "test-session", "window-0", "M-1"
+            )
+
+    def test_cancels_if_agent_view_opens_wrong_session(self):
+        provider = ClaudeCodeProvider("test123", "test-session", "window-0")
+        agent_view = """Claude Code v2.1.210
+✻ target  preview
+describe a task for a new session
+"""
+        wrong_screen = "──────────────── [wrong] ──\n❯ "
+
+        with patch("cli_agent_orchestrator.providers.claude_code.get_backend") as backend:
+            backend.return_value.get_history.side_effect = [agent_view, wrong_screen]
+            with pytest.raises(ProviderError, match="attach cancelled"):
+                provider._attach_background_agent("target", timeout=1)
+            assert backend.return_value.send_special_key.call_args_list[-1].args[-1] == "Escape"
+
     @pytest.mark.asyncio
     @_PATCH_SETTINGS
     @patch("cli_agent_orchestrator.providers.claude_code.wait_for_shell")
@@ -1628,6 +1707,31 @@ class TestClaudeCodeMcpCallNotCompleted:
         assert provider.get_status(output) == TerminalStatus.COMPLETED
 
 
+class TestClaudeCodeAuthorityLiveToolStatus:
+    """Authority bridge fixture: a live shell row outranks pinned idle chrome."""
+
+    def test_live_shell_row_is_processing(self):
+        fixture = (
+            Path(__file__).parent
+            / "fixtures"
+            / "claude_code_authority_live_shell.txt"
+        ).read_text(encoding="utf-8")
+        provider = ClaudeCodeProvider("test123", "test-session", "window-0")
+
+        assert provider.get_status(fixture) == TerminalStatus.PROCESSING
+
+    def test_newer_completion_makes_old_shell_row_stale(self):
+        fixture = (
+            Path(__file__).parent
+            / "fixtures"
+            / "claude_code_authority_live_shell.txt"
+        ).read_text(encoding="utf-8")
+        output = fixture + "\n● Finished verification\n✻ Crunched for 2s\n❯ \n"
+        provider = ClaudeCodeProvider("test123", "test-session", "window-0")
+
+        assert provider.get_status(output) == TerminalStatus.COMPLETED
+
+
 class TestClaudeCodeScreenDetection:
     """Viewport detector (get_status_from_screen) — pyte-composited screens.
 
@@ -1718,6 +1822,53 @@ class TestClaudeCodeScreenDetection:
 
     def test_empty_screen_is_unknown(self):
         assert self._p().get_status_from_screen(["", "", ""]) == TerminalStatus.UNKNOWN
+
+    def test_api_retry_row_is_processing_even_with_ready_box(self):
+        screen = [
+            "✻ API error · Retrying in 0s · attempt 1/10",
+            "─" * 60,
+            "❯ ",
+            "─" * 60,
+        ]
+        assert self._p().get_status_from_screen(screen) == TerminalStatus.PROCESSING
+
+    def test_raw_api_retry_row_is_processing_after_old_completion(self):
+        output = (
+            "✻ Crunched for 5m 29s\n"
+            + "─" * 60
+            + "\n❯ \n"
+            + "─" * 60
+            + "\n✻ API error · Retrying in 0s · attempt 1/10\n"
+        )
+        assert self._p().get_status(output) == TerminalStatus.PROCESSING
+
+    def test_localized_agent_progress_row_is_processing(self):
+        screen = [
+            "● 273 行。读全文以取证。",
+            "✽ 打 S1 v0.4.2 最小封口… (1m 15s · ↓ 3.6k tokens · thinking with xhigh effort)",
+            "─" * 60,
+            "❯ ",
+            "─" * 60,
+        ]
+        assert self._p().get_status_from_screen(screen) == TerminalStatus.PROCESSING
+
+    def test_raw_localized_agent_progress_is_newer_than_old_completion(self):
+        output = (
+            "✻ Crunched for 5m 29s\n"
+            "● 273 行。读全文以取证。\n"
+            "✢ 打 S1 v0.4.2 最小封口… (35s · ↓ 1.2k tokens · thinking with xhigh effort)\n"
+        )
+        assert self._p().get_status(output) == TerminalStatus.PROCESSING
+
+    def test_markdown_bullet_with_duration_but_no_telemetry_is_completed(self):
+        screen = [
+            "● Done — see notes.",
+            "* Remember to retry… (35s)",
+            "─" * 60,
+            "❯ ",
+            "─" * 60,
+        ]
+        assert self._p().get_status_from_screen(screen) == TerminalStatus.COMPLETED
 
 
 class TestClaudeCodeBackgroundTaskNotCompleted:

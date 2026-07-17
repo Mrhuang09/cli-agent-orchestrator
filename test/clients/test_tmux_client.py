@@ -99,6 +99,43 @@ class TestCreateSession:
         assert kwargs.get("x") == 220
         assert kwargs.get("y") == 50
 
+    def test_create_session_configures_scroll_defaults_before_new_pane(
+        self, tmux, tmp_path
+    ):
+        mock_window = MagicMock()
+        mock_window.name = "my-window"
+        mock_session = MagicMock()
+        mock_session.windows = [mock_window]
+        tmux.server.new_session.return_value = mock_session
+
+        parent = MagicMock()
+        parent.attach_mock(tmux.server.cmd, "cmd")
+        parent.attach_mock(tmux.server.new_session, "new_session")
+
+        tmux.create_session("ses", "my-window", "tid1", str(tmp_path))
+
+        assert parent.mock_calls[:2] == [
+            call.cmd("set-option", "-g", "mouse", "on"),
+            call.cmd("set-window-option", "-g", "history-limit", "20000"),
+        ]
+        assert parent.mock_calls[2] == call.new_session(
+            session_name="ses",
+            window_name="my-window",
+            start_directory=str(tmp_path),
+            detach=True,
+            environment=tmux.server.new_session.call_args.kwargs["environment"],
+            x=220,
+            y=50,
+        )
+
+    def test_create_session_stops_when_scroll_configuration_fails(self, tmux, tmp_path):
+        tmux.server.cmd.side_effect = RuntimeError("tmux option failure")
+
+        with pytest.raises(RuntimeError, match="tmux option failure"):
+            tmux.create_session("ses", "my-window", "tid1", str(tmp_path))
+
+        tmux.server.new_session.assert_not_called()
+
 
 class TestCreateSessionEnvironmentFiltering:
     """Tests for environment variable filtering in create_session (#242)."""

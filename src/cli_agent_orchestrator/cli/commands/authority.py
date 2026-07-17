@@ -212,6 +212,71 @@ def attach_command(project_root: Path) -> None:
         raise _handle_error(exc) from exc
 
 
+@authority.command("send")
+@click.argument("message")
+@click.option(
+    "--to",
+    "to_role",
+    required=True,
+    type=click.Choice(["project-director", "technical-director"]),
+    help="Current authority role that receives the message.",
+)
+@click.option(
+    "--from",
+    "from_role",
+    type=click.Choice(["project-director", "technical-director"]),
+    help="Required outside an authority terminal; validated against the current generation.",
+)
+@click.option(
+    "--project-root",
+    default=".",
+    show_default=True,
+    type=click.Path(file_okay=False, path_type=Path),
+)
+@click.option(
+    "--wait-delivered",
+    is_flag=True,
+    help="Wait for inbox delivery, not for task completion or a reply.",
+)
+@click.option("--timeout", default=30.0, show_default=True, type=click.FloatRange(min=0.1))
+@click.option("--json", "as_json", is_flag=True, help="Output machine-readable JSON.")
+def send_command(
+    message: str,
+    to_role: str,
+    from_role: str | None,
+    project_root: Path,
+    wait_delivered: bool,
+    timeout: float,
+    as_json: bool,
+) -> None:
+    """Queue a durable message to the current terminal bound to a role."""
+    root = _root(str(project_root))
+    try:
+        result = AuthorityRuntime(root).send(
+            to_role=to_role,
+            from_role=from_role,
+            message=message,
+            wait_delivered=wait_delivered,
+            timeout=timeout,
+        )
+    except (
+        ValueError,
+        FileNotFoundError,
+        RuntimeError,
+        TimeoutError,
+        OSError,
+        requests.RequestException,
+    ) as exc:
+        raise _handle_error(exc) from exc
+    if as_json:
+        click.echo(json.dumps(result, indent=2))
+        return
+    click.echo(
+        f"Authority message {result['message_id']} accepted: "
+        f"{result.get('queue_status', 'pending')}"
+    )
+
+
 @authority.command("stop")
 @click.option(
     "--project-root",

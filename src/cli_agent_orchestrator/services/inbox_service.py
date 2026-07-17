@@ -8,6 +8,7 @@ import logging
 from itertools import groupby
 
 from cli_agent_orchestrator.backends.base import TerminalNotFoundError
+from cli_agent_orchestrator.backends.registry import get_backend
 from cli_agent_orchestrator.clients.database import (
     get_pending_messages,
     list_pending_receiver_ids_by_provider,
@@ -17,6 +18,9 @@ from cli_agent_orchestrator.clients.database import (
 from cli_agent_orchestrator.constants import (
     EAGER_INBOX_DELIVERY,
     INBOX_RECONCILE_GRACE_SECONDS,
+    PYTE_SCREEN_COLS,
+    PYTE_SCREEN_ROWS,
+    TERMINAL_LOG_DIR,
 )
 from cli_agent_orchestrator.models.inbox import MessageStatus, OrchestrationType
 from cli_agent_orchestrator.models.provider import ProviderType
@@ -29,6 +33,12 @@ from cli_agent_orchestrator.services.status_monitor import status_monitor
 from cli_agent_orchestrator.utils.event import terminal_id_from_topic
 
 logger = logging.getLogger(__name__)
+
+# Bytes of pipe-pane log tail rendered into a pyte screen when recomputing codex
+# status (see _codex_screen_status). Codex redraws a large scroll region, so the
+# 8KB StatusMonitor rolling buffer is too small to reconstruct the settled screen;
+# ~128KB reliably contains the last full repaint (validated against live logs).
+CODEX_LOG_TAIL_BYTES = 131072
 
 
 class InboxService:
@@ -60,6 +70,7 @@ class InboxService:
         terminal_id: str,
         num_messages: int = 1,
         registry: PluginRegistry | None = None,
+        status_override: TerminalStatus | None = None,
     ) -> None:
         """Deliver pending message(s) to a ready terminal. Use num_messages=0 for all.
 
@@ -70,13 +81,19 @@ class InboxService:
         When a plugin registry is supplied, the originating sender and a
         ``send_message`` orchestration type are threaded to ``terminal_service``
         so ``PostSendMessageEvent`` hooks fire with correct attribution.
+
+        ``status_override`` lets a poller that has already computed an authoritative
+        status (e.g. the codex log-render path, whose result the cached StatusMonitor
+        status can contradict) drive delivery without re-consulting the cache. The
+        override is trusted only when it is itself IDLE/COMPLETED — the same gate the
+        normal path applies — so it can never force a delivery into a busy terminal.
         """
         limit = num_messages if num_messages > 0 else 100
         messages = get_pending_messages(terminal_id, limit=limit)
         if not messages:
             return
 
-        status = status_monitor.get_status(terminal_id)
+        status = status_override if status_override is not None else status_monitor.get_status(terminal_id)
         if status not in (TerminalStatus.IDLE, TerminalStatus.COMPLETED):
             # Not ready on the normal path. Eager delivery (#251) lets providers
             # that accept input mid-turn receive messages while PROCESSING or
@@ -150,6 +167,68 @@ class InboxService:
                 self.deliver_pending(terminal_id, registry=registry)
             except Exception as e:
                 logger.debug(f"OpenCode inbox poll failed for {terminal_id}: {e}")
+
+    def _codex_screen_status(self, terminal_id: str) -> TerminalStatus | None:
+        """Recompute a codex terminal's status from its pipe-pane log tail.
+
+        The FIFO StatusMonitor composites a fixed-size pyte screen; when a codex
+        pane is taller than that viewport its bottom chrome (input box + footer)
+        scrolls out, so a settled-idle codex reads as PROCESSING and its inbox
+        never delivers. This read-only recompute renders ``CODEX_LOG_TAIL_BYTES``
+        of the persisted log into a fresh pyte screen sized to the *actual* pane
+        (via ``get_backend().get_pane_size``), then asks the provider's
+        screen detector. Returns ``None`` if anything is unavailable, so callers
+        skip delivery rather than act on a guess.
+        """
+        provider = provider_manager.get_provider(terminal_id)
+        if provider is None or not getattr(provider, "supports_screen_detection", False):
+            return None
+        try:
+            with open(TERMINAL_LOG_DIR / f"{terminal_id}.log", "rb") as f:
+                f.seek(0, 2)
+                size = f.tell()
+                f.seek(max(0, size - CODEX_LOG_TAIL_BYTES))
+                data = f.read().decode("utf-8", errors="replace")
+        except OSError:
+            return None
+        if not data:
+            return None
+        cols, rows = PYTE_SCREEN_COLS, PYTE_SCREEN_ROWS
+        try:
+            pane_size = get_backend().get_pane_size(provider.session_name, provider.window_name)
+            if pane_size:
+                cols, rows = pane_size
+        except Exception:
+            pass
+        try:
+            import pyte
+
+            screen = pyte.Screen(cols, rows)
+            pyte.Stream(screen).feed(data)
+            return provider.get_status_from_screen(list(screen.display))
+        except Exception:
+            logger.debug("codex screen status recompute failed for %s", terminal_id, exc_info=True)
+            return None
+
+    def poll_codex_pending_messages(self, registry: PluginRegistry | None = None) -> None:
+        """Wake codex inbox delivery for pending messages.
+
+        Codex panes can exceed the composited status viewport, so a settled-idle
+        codex can read as PROCESSING and never receive queued messages (its silent
+        TUI also emits no new IDLE event to retry on). This poll recomputes an
+        authoritative status from the pipe-pane log (``_codex_screen_status``) and
+        delivers only when that says IDLE/COMPLETED — a genuinely busy codex still
+        reports PROCESSING and is skipped, so nothing is pasted mid-turn.
+        """
+        for terminal_id in list_pending_receiver_ids_by_provider(ProviderType.CODEX.value):
+            try:
+                status = self._codex_screen_status(terminal_id)
+                if status in (TerminalStatus.IDLE, TerminalStatus.COMPLETED):
+                    self.deliver_pending(
+                        terminal_id, num_messages=0, registry=registry, status_override=status
+                    )
+            except Exception as e:
+                logger.debug(f"Codex inbox poll failed for {terminal_id}: {e}")
 
     def reconcile_orphaned_messages(self, registry: PluginRegistry | None = None) -> None:
         """Re-attempt delivery for messages stuck in PENDING past the grace window.
