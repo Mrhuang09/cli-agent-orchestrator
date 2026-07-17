@@ -22,6 +22,8 @@ logger = logging.getLogger(__name__)
 class TmuxClient:
     """Simplified tmux client for basic operations."""
 
+    _DEFAULT_HISTORY_LIMIT = 20_000
+
     def __init__(self) -> None:
         self.server = libtmux.Server()
 
@@ -122,6 +124,23 @@ class TmuxClient:
                 continue
             environment[key] = value
 
+    def _configure_server_interaction_defaults(self) -> None:
+        """Configure durable interactive defaults before creating a pane.
+
+        ``history-limit`` only applies to panes created after the option is
+        set, so this must run before ``new_session``.  Both commands are
+        idempotent and intentionally fail the session creation if tmux cannot
+        apply them; silently creating a non-scrollable CAO session would make
+        behavior depend on the operator's local tmux configuration.
+        """
+        self.server.cmd("set-option", "-g", "mouse", "on")
+        self.server.cmd(
+            "set-window-option",
+            "-g",
+            "history-limit",
+            str(self._DEFAULT_HISTORY_LIMIT),
+        )
+
     def create_session(
         self,
         session_name: str,
@@ -133,6 +152,8 @@ class TmuxClient:
         """Create detached tmux session with initial window and return window name."""
         try:
             working_directory = self._resolve_and_validate_working_directory(working_directory)
+
+            self._configure_server_interaction_defaults()
 
             # Only pass essential env vars to avoid tmux "command too long"
             essential_keys = {
