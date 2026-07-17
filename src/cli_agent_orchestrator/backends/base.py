@@ -5,7 +5,7 @@ Core services depend only on this ABC, never on a concrete backend directly.
 """
 
 from abc import ABC, abstractmethod
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from cli_agent_orchestrator.models.terminal import TerminalStatus
 
@@ -226,6 +226,15 @@ class TerminalBackend(ABC):
             Command name, or None if unavailable
         """
         ...
+
+    def get_pane_size(self, session_name: str, window_name: str) -> Optional[Tuple[int, int]]:
+        """Get the active pane's ``(columns, rows)``.
+
+        Concrete (non-abstract) with a ``None`` default: backends that can't
+        report pane geometry inherit it unchanged. Callers must treat ``None``
+        as "unknown" and fall back to a default size.
+        """
+        return None
 
     # --- Attach ---
 

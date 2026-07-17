@@ -5,7 +5,7 @@ import os
 import subprocess
 import time
 import uuid
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import libtmux
 
@@ -580,6 +580,29 @@ class TmuxClient:
             return None
         except Exception as e:
             logger.error(f"Failed to get pane command for {session_name}:{window_name}: {e}")
+            return None
+
+    def get_pane_size(self, session_name: str, window_name: str) -> Optional[Tuple[int, int]]:
+        """Get the active pane's ``(columns, rows)``. None if unresolvable."""
+        try:
+            session = self.server.sessions.get(session_name=session_name)
+            if not session:
+                return None
+            window = session.windows.get(window_name=window_name)
+            if not window:
+                return None
+            pane = window.active_pane
+            if pane:
+                result = pane.cmd("display-message", "-p", "#{pane_width}x#{pane_height}")
+                if result.stdout:
+                    cols_s, _, rows_s = result.stdout[0].strip().partition("x")
+                    if cols_s.isdigit() and rows_s.isdigit():
+                        cols, rows = int(cols_s), int(rows_s)
+                        if cols > 0 and rows > 0:
+                            return cols, rows
+            return None
+        except Exception as e:
+            logger.error(f"Failed to get pane size for {session_name}:{window_name}: {e}")
             return None
 
     def pipe_pane(self, session_name: str, window_name: str, file_path: str) -> None:

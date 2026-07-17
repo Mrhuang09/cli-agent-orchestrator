@@ -6,7 +6,7 @@ no alternative is configured.
 """
 
 import logging
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from cli_agent_orchestrator.backends.base import TerminalBackend, TerminalBackendError
 from cli_agent_orchestrator.clients.tmux import TmuxClient
@@ -125,6 +125,9 @@ class TmuxBackend(TerminalBackend):
 
     def get_pane_current_command(self, session_name: str, window_name: str) -> Optional[str]:
         return self._client.get_pane_current_command(session_name, window_name)
+
+    def get_pane_size(self, session_name: str, window_name: str) -> Optional[Tuple[int, int]]:
+        return self._client.get_pane_size(session_name, window_name)
 
     # --- Attach ---
 

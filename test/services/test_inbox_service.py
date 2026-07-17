@@ -397,6 +397,105 @@ class TestPollOpenCodePendingMessages:
         assert svc.deliver_pending.call_count == 2
 
 
+class TestPollCodexPendingMessages:
+    """Tests for the codex inbox poller (log-render status recompute)."""
+
+    @patch("cli_agent_orchestrator.services.inbox_service.list_pending_receiver_ids_by_provider")
+    def test_delivers_when_recomputed_status_idle(self, mock_list_receivers):
+        """Idle recomputed status -> delivery with an authoritative status_override."""
+        mock_list_receivers.return_value = ["receiver-1"]
+
+        svc = InboxService()
+        svc._codex_screen_status = MagicMock(return_value=TerminalStatus.IDLE)
+        svc.deliver_pending = MagicMock()
+        svc.poll_codex_pending_messages()
+
+        mock_list_receivers.assert_called_once_with("codex")
+        svc.deliver_pending.assert_called_once_with(
+            "receiver-1", num_messages=0, registry=None, status_override=TerminalStatus.IDLE
+        )
+
+    @patch("cli_agent_orchestrator.services.inbox_service.list_pending_receiver_ids_by_provider")
+    def test_skips_when_recomputed_status_processing(self, mock_list_receivers):
+        """A genuinely busy codex (PROCESSING) is never pasted into."""
+        mock_list_receivers.return_value = ["receiver-1"]
+
+        svc = InboxService()
+        svc._codex_screen_status = MagicMock(return_value=TerminalStatus.PROCESSING)
+        svc.deliver_pending = MagicMock()
+        svc.poll_codex_pending_messages()
+
+        svc.deliver_pending.assert_not_called()
+
+    @patch("cli_agent_orchestrator.services.inbox_service.list_pending_receiver_ids_by_provider")
+    def test_skips_when_status_unavailable(self, mock_list_receivers):
+        """None (log/pane unavailable) -> skip, never guess."""
+        mock_list_receivers.return_value = ["receiver-1"]
+
+        svc = InboxService()
+        svc._codex_screen_status = MagicMock(return_value=None)
+        svc.deliver_pending = MagicMock()
+        svc.poll_codex_pending_messages()
+
+        svc.deliver_pending.assert_not_called()
+
+    @patch("cli_agent_orchestrator.services.inbox_service.list_pending_receiver_ids_by_provider")
+    def test_survives_per_receiver_failure(self, mock_list_receivers):
+        """One failing receiver does not stop the loop."""
+        mock_list_receivers.return_value = ["receiver-1", "receiver-2"]
+
+        svc = InboxService()
+        svc._codex_screen_status = MagicMock(
+            side_effect=[Exception("log read error"), TerminalStatus.COMPLETED]
+        )
+        svc.deliver_pending = MagicMock()
+        svc.poll_codex_pending_messages()
+
+        svc.deliver_pending.assert_called_once_with(
+            "receiver-2", num_messages=0, registry=None, status_override=TerminalStatus.COMPLETED
+        )
+
+
+class TestDeliverPendingStatusOverride:
+    """deliver_pending(status_override=...) trusts an authoritative status."""
+
+    @patch("cli_agent_orchestrator.services.inbox_service.update_message_status")
+    @patch("cli_agent_orchestrator.services.inbox_service.terminal_service")
+    @patch("cli_agent_orchestrator.services.inbox_service.status_monitor")
+    @patch("cli_agent_orchestrator.services.inbox_service.get_pending_messages")
+    def test_override_ready_delivers_without_consulting_cache(
+        self, mock_get, mock_monitor, mock_term_svc, mock_update
+    ):
+        """COMPLETED override delivers even though the cached status is PROCESSING."""
+        mock_get.return_value = [_make_message()]
+
+        svc = InboxService()
+        svc.deliver_pending("t1", num_messages=0, status_override=TerminalStatus.COMPLETED)
+
+        mock_term_svc.send_input.assert_called_once()
+        mock_monitor.get_status.assert_not_called()
+
+    @patch("cli_agent_orchestrator.services.inbox_service.update_message_status")
+    @patch("cli_agent_orchestrator.services.inbox_service.terminal_service")
+    @patch("cli_agent_orchestrator.services.inbox_service.provider_manager")
+    @patch("cli_agent_orchestrator.services.inbox_service.status_monitor")
+    @patch("cli_agent_orchestrator.services.inbox_service.get_pending_messages")
+    def test_override_processing_still_blocks(
+        self, mock_get, mock_monitor, mock_pm, mock_term_svc, mock_update
+    ):
+        """A PROCESSING override is gated exactly like a cached PROCESSING status."""
+        mock_get.return_value = [_make_message()]
+        provider = MagicMock()
+        provider.accepts_input_while_processing = False
+        mock_pm.get_provider.return_value = provider
+
+        with patch("cli_agent_orchestrator.services.inbox_service.EAGER_INBOX_DELIVERY", False):
+            svc = InboxService()
+            svc.deliver_pending("t1", status_override=TerminalStatus.PROCESSING)
+
+        mock_term_svc.send_input.assert_not_called()
+
+
 class TestReconcileOrphanedMessages:
     """Tests for the provider-agnostic inbox reconciliation sweep (issue #131)."""
 

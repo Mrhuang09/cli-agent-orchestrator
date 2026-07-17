@@ -159,6 +159,22 @@ async def opencode_inbox_delivery_daemon(registry: PluginRegistry) -> None:
             logger.exception("OpenCode inbox delivery poller error")
 
 
+async def codex_inbox_delivery_daemon(registry: PluginRegistry) -> None:
+    """Background task to wake codex inbox delivery for pending messages.
+
+    Codex panes taller than the composited status viewport can read as PROCESSING
+    while settled-idle, stranding queued messages; this poll recomputes status
+    from the pipe-pane log and delivers when idle (see poll_codex_pending_messages).
+    """
+    logger.info("Codex inbox delivery poller started")
+    while True:
+        await asyncio.sleep(INBOX_POLLING_INTERVAL)
+        try:
+            await asyncio.to_thread(inbox_service.poll_codex_pending_messages, registry)
+        except Exception:
+            logger.exception("Codex inbox delivery poller error")
+
+
 async def inbox_reconciliation_daemon(registry: PluginRegistry) -> None:
     """Background task that recovers inbox messages the fast paths missed.
 
@@ -473,6 +489,10 @@ async def lifespan(app: FastAPI):
     # provider-specific wakeup path with a unified delivery engine.
     opencode_inbox_task = asyncio.create_task(opencode_inbox_delivery_daemon(registry))
 
+    # Start codex inbox poller (same rationale as OpenCode; GH #115). Codex idle
+    # panes can under-run the status viewport and strand messages otherwise.
+    codex_inbox_task = asyncio.create_task(codex_inbox_delivery_daemon(registry))
+
     # Start provider-agnostic reconciliation sweep for orphaned PENDING messages
     # the immediate and event-driven status paths missed (issue #131).
     inbox_reconcile_task = asyncio.create_task(inbox_reconciliation_daemon(registry))
@@ -530,6 +550,13 @@ async def lifespan(app: FastAPI):
     opencode_inbox_task.cancel()
     try:
         await opencode_inbox_task
+    except asyncio.CancelledError:
+        pass
+
+    # Cancel codex inbox poller on shutdown
+    codex_inbox_task.cancel()
+    try:
+        await codex_inbox_task
     except asyncio.CancelledError:
         pass
 
