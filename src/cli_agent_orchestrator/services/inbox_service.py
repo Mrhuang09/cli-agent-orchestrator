@@ -13,6 +13,7 @@ from cli_agent_orchestrator.clients.database import (
     get_pending_messages,
     list_pending_receiver_ids_by_provider,
     list_pending_receiver_ids_older_than,
+    record_authority_terminal_status,
     update_message_status,
 )
 from cli_agent_orchestrator.constants import (
@@ -52,7 +53,10 @@ class InboxService:
             try:
                 event = await queue.get()
                 status_value = event["data"]["status"]
-                if status_value in (TerminalStatus.IDLE.value, TerminalStatus.COMPLETED.value):
+                if status_value in (
+                    TerminalStatus.IDLE.value,
+                    TerminalStatus.COMPLETED.value,
+                ):
                     terminal_id = terminal_id_from_topic(event["topic"])
                     # deliver_pending does blocking DB + tmux I/O. Offload it to a
                     # worker thread so this consumer keeps yielding to the event loop
@@ -61,7 +65,9 @@ class InboxService:
                     # threaded through so status-driven deliveries fire
                     # PostSendMessageEvent hooks with the same attribution as the
                     # immediate and OpenCode-poller paths.
-                    await asyncio.to_thread(self.deliver_pending, terminal_id, registry=registry)
+                    await asyncio.to_thread(
+                        self.deliver_pending, terminal_id, registry=registry
+                    )
             except Exception as e:
                 logger.error(f"Error in InboxService: {e}")
 
@@ -93,7 +99,11 @@ class InboxService:
         if not messages:
             return
 
-        status = status_override if status_override is not None else status_monitor.get_status(terminal_id)
+        status = (
+            status_override
+            if status_override is not None
+            else status_monitor.get_status(terminal_id)
+        )
         if status not in (TerminalStatus.IDLE, TerminalStatus.COMPLETED):
             # Not ready on the normal path. Eager delivery (#251) lets providers
             # that accept input mid-turn receive messages while PROCESSING or
@@ -118,6 +128,11 @@ class InboxService:
         # them to FAILED.
         for message in messages:
             update_message_status(message.id, MessageStatus.DELIVERED)
+        if status == TerminalStatus.PROCESSING:
+            # Eager delivery can place an authority request into an already busy
+            # terminal, so no new PROCESSING edge is guaranteed. Record that
+            # authoritative current state after delivery to start the callback.
+            record_authority_terminal_status(terminal_id, status.value)
 
         # Deliver in contiguous runs of the same sender. With the default
         # num_messages=1 this is a single run; when draining all pending messages
@@ -138,7 +153,9 @@ class InboxService:
                         sender_id=sender_id,
                         orchestration_type=OrchestrationType.SEND_MESSAGE,
                     )
-                logger.info(f"Delivered {len(batch)} message(s) to terminal {terminal_id}")
+                logger.info(
+                    f"Delivered {len(batch)} message(s) to terminal {terminal_id}"
+                )
             except TerminalNotFoundError as e:
                 # Pane not resolvable yet (e.g. a herdr pane that isn't mapped
                 # for this window). Treat as transient: reset to PENDING so the
@@ -152,17 +169,23 @@ class InboxService:
                 )
             except Exception as e:
                 for message in batch:
-                    logger.error(f"Failed to deliver message {message.id} to {terminal_id}: {e}")
+                    logger.error(
+                        f"Failed to deliver message {message.id} to {terminal_id}: {e}"
+                    )
                     update_message_status(message.id, MessageStatus.FAILED)
 
-    def poll_opencode_pending_messages(self, registry: PluginRegistry | None = None) -> None:
+    def poll_opencode_pending_messages(
+        self, registry: PluginRegistry | None = None
+    ) -> None:
         """Poll OpenCode terminals for pending inbox messages.
 
         OpenCode-specific wakeup path for providers whose pipe-pane logs do not
         change after the TUI settles, so the FIFO-driven StatusMonitor may not
         emit an IDLE/COMPLETED transition to trigger delivery on its own.
         """
-        for terminal_id in list_pending_receiver_ids_by_provider(ProviderType.OPENCODE_CLI.value):
+        for terminal_id in list_pending_receiver_ids_by_provider(
+            ProviderType.OPENCODE_CLI.value
+        ):
             try:
                 self.deliver_pending(terminal_id, registry=registry)
             except Exception as e:
@@ -181,7 +204,9 @@ class InboxService:
         skip delivery rather than act on a guess.
         """
         provider = provider_manager.get_provider(terminal_id)
-        if provider is None or not getattr(provider, "supports_screen_detection", False):
+        if provider is None or not getattr(
+            provider, "supports_screen_detection", False
+        ):
             return None
         try:
             with open(TERMINAL_LOG_DIR / f"{terminal_id}.log", "rb") as f:
@@ -195,7 +220,9 @@ class InboxService:
             return None
         cols, rows = PYTE_SCREEN_COLS, PYTE_SCREEN_ROWS
         try:
-            pane_size = get_backend().get_pane_size(provider.session_name, provider.window_name)
+            pane_size = get_backend().get_pane_size(
+                provider.session_name, provider.window_name
+            )
             if pane_size:
                 cols, rows = pane_size
         except Exception:
@@ -207,10 +234,16 @@ class InboxService:
             pyte.Stream(screen).feed(data)
             return provider.get_status_from_screen(list(screen.display))
         except Exception:
-            logger.debug("codex screen status recompute failed for %s", terminal_id, exc_info=True)
+            logger.debug(
+                "codex screen status recompute failed for %s",
+                terminal_id,
+                exc_info=True,
+            )
             return None
 
-    def poll_codex_pending_messages(self, registry: PluginRegistry | None = None) -> None:
+    def poll_codex_pending_messages(
+        self, registry: PluginRegistry | None = None
+    ) -> None:
         """Wake codex inbox delivery for pending messages.
 
         Codex panes can exceed the composited status viewport, so a settled-idle
@@ -220,17 +253,24 @@ class InboxService:
         delivers only when that says IDLE/COMPLETED — a genuinely busy codex still
         reports PROCESSING and is skipped, so nothing is pasted mid-turn.
         """
-        for terminal_id in list_pending_receiver_ids_by_provider(ProviderType.CODEX.value):
+        for terminal_id in list_pending_receiver_ids_by_provider(
+            ProviderType.CODEX.value
+        ):
             try:
                 status = self._codex_screen_status(terminal_id)
                 if status in (TerminalStatus.IDLE, TerminalStatus.COMPLETED):
                     self.deliver_pending(
-                        terminal_id, num_messages=0, registry=registry, status_override=status
+                        terminal_id,
+                        num_messages=0,
+                        registry=registry,
+                        status_override=status,
                     )
             except Exception as e:
                 logger.debug(f"Codex inbox poll failed for {terminal_id}: {e}")
 
-    def reconcile_orphaned_messages(self, registry: PluginRegistry | None = None) -> None:
+    def reconcile_orphaned_messages(
+        self, registry: PluginRegistry | None = None
+    ) -> None:
         """Re-attempt delivery for messages stuck in PENDING past the grace window.
 
         Provider-agnostic safety net for issue #131: when a receiving terminal is
@@ -244,7 +284,9 @@ class InboxService:
         so the sweep never competes with the fast paths for freshly queued
         messages — it only adopts ones they have already missed.
         """
-        for terminal_id in list_pending_receiver_ids_older_than(INBOX_RECONCILE_GRACE_SECONDS):
+        for terminal_id in list_pending_receiver_ids_older_than(
+            INBOX_RECONCILE_GRACE_SECONDS
+        ):
             try:
                 self.deliver_pending(terminal_id, registry=registry)
             except Exception as e:

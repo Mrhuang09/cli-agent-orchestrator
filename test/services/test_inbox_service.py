@@ -13,7 +13,9 @@ from cli_agent_orchestrator.models.terminal import TerminalStatus
 from cli_agent_orchestrator.services.inbox_service import InboxService
 
 
-def _make_message(id=1, receiver_id="term-1", message="hello", status=MessageStatus.PENDING):
+def _make_message(
+    id=1, receiver_id="term-1", message="hello", status=MessageStatus.PENDING
+):
     return InboxMessage(
         id=id,
         sender_id="sender-1",
@@ -31,7 +33,9 @@ class TestDeliverPending:
     @patch("cli_agent_orchestrator.services.inbox_service.terminal_service")
     @patch("cli_agent_orchestrator.services.inbox_service.status_monitor")
     @patch("cli_agent_orchestrator.services.inbox_service.get_pending_messages")
-    def test_delivers_message_when_idle(self, mock_get, mock_monitor, mock_term_svc, mock_update):
+    def test_delivers_message_when_idle(
+        self, mock_get, mock_monitor, mock_term_svc, mock_update
+    ):
         mock_get.return_value = [_make_message()]
         mock_monitor.get_status.return_value = TerminalStatus.IDLE
 
@@ -76,7 +80,9 @@ class TestDeliverPending:
     @patch("cli_agent_orchestrator.services.inbox_service.terminal_service")
     @patch("cli_agent_orchestrator.services.inbox_service.status_monitor")
     @patch("cli_agent_orchestrator.services.inbox_service.get_pending_messages")
-    def test_skips_when_processing(self, mock_get, mock_monitor, mock_term_svc, mock_update):
+    def test_skips_when_processing(
+        self, mock_get, mock_monitor, mock_term_svc, mock_update
+    ):
         mock_get.return_value = [_make_message()]
         mock_monitor.get_status.return_value = TerminalStatus.PROCESSING
 
@@ -90,7 +96,9 @@ class TestDeliverPending:
     @patch("cli_agent_orchestrator.services.inbox_service.terminal_service")
     @patch("cli_agent_orchestrator.services.inbox_service.status_monitor")
     @patch("cli_agent_orchestrator.services.inbox_service.get_pending_messages")
-    def test_skips_when_unknown(self, mock_get, mock_monitor, mock_term_svc, mock_update):
+    def test_skips_when_unknown(
+        self, mock_get, mock_monitor, mock_term_svc, mock_update
+    ):
         mock_get.return_value = [_make_message()]
         mock_monitor.get_status.return_value = TerminalStatus.UNKNOWN
 
@@ -107,7 +115,10 @@ class TestDeliverPending:
     def test_delivers_multiple_messages_concatenated(
         self, mock_get, mock_monitor, mock_term_svc, mock_update
     ):
-        msgs = [_make_message(id=1, message="hello"), _make_message(id=2, message="world")]
+        msgs = [
+            _make_message(id=1, message="hello"),
+            _make_message(id=2, message="world"),
+        ]
         mock_get.return_value = msgs
         mock_monitor.get_status.return_value = TerminalStatus.IDLE
 
@@ -140,7 +151,9 @@ class TestDeliverPending:
     @patch("cli_agent_orchestrator.services.inbox_service.terminal_service")
     @patch("cli_agent_orchestrator.services.inbox_service.status_monitor")
     @patch("cli_agent_orchestrator.services.inbox_service.get_pending_messages")
-    def test_marks_failed_on_send_error(self, mock_get, mock_monitor, mock_term_svc, mock_update):
+    def test_marks_failed_on_send_error(
+        self, mock_get, mock_monitor, mock_term_svc, mock_update
+    ):
         mock_get.return_value = [_make_message()]
         mock_monitor.get_status.return_value = TerminalStatus.IDLE
         mock_term_svc.send_input.side_effect = RuntimeError("tmux error")
@@ -177,7 +190,9 @@ class TestDeliverPending:
 
         order = []
         mock_update.side_effect = lambda *args, **kwargs: order.append(("update", args))
-        mock_term_svc.send_input.side_effect = lambda *args, **kwargs: order.append(("send", args))
+        mock_term_svc.send_input.side_effect = lambda *args, **kwargs: order.append(
+            ("send", args)
+        )
 
         svc = InboxService()
         svc.deliver_pending("term-1")
@@ -234,7 +249,9 @@ class TestEagerInboxDelivery:
         provider.accepts_input_while_processing = False
         mock_pm.get_provider.return_value = provider
 
-        with patch("cli_agent_orchestrator.services.inbox_service.EAGER_INBOX_DELIVERY", False):
+        with patch(
+            "cli_agent_orchestrator.services.inbox_service.EAGER_INBOX_DELIVERY", False
+        ):
             svc = InboxService()
             svc.deliver_pending("t1")
 
@@ -255,19 +272,30 @@ class TestEagerInboxDelivery:
         provider.accepts_input_while_processing = False
         mock_pm.get_provider.return_value = provider
 
-        with patch("cli_agent_orchestrator.services.inbox_service.EAGER_INBOX_DELIVERY", False):
+        with patch(
+            "cli_agent_orchestrator.services.inbox_service.EAGER_INBOX_DELIVERY", False
+        ):
             svc = InboxService()
             svc.deliver_pending("t1")
 
         mock_term_svc.send_input.assert_called_once()
 
+    @patch(
+        "cli_agent_orchestrator.services.inbox_service.record_authority_terminal_status"
+    )
     @patch("cli_agent_orchestrator.services.inbox_service.update_message_status")
     @patch("cli_agent_orchestrator.services.inbox_service.terminal_service")
     @patch("cli_agent_orchestrator.services.inbox_service.provider_manager")
     @patch("cli_agent_orchestrator.services.inbox_service.status_monitor")
     @patch("cli_agent_orchestrator.services.inbox_service.get_pending_messages")
     def test_delivery_processing_with_eager_enabled_and_capable_provider(
-        self, mock_get, mock_monitor, mock_pm, mock_term_svc, mock_update
+        self,
+        mock_get,
+        mock_monitor,
+        mock_pm,
+        mock_term_svc,
+        mock_update,
+        mock_record_status,
     ):
         """PROCESSING + eager ON + capable provider -> delivers."""
         mock_get.return_value = [_make_message()]
@@ -276,11 +304,16 @@ class TestEagerInboxDelivery:
         provider.accepts_input_while_processing = True
         mock_pm.get_provider.return_value = provider
 
-        with patch("cli_agent_orchestrator.services.inbox_service.EAGER_INBOX_DELIVERY", True):
+        with patch(
+            "cli_agent_orchestrator.services.inbox_service.EAGER_INBOX_DELIVERY", True
+        ):
             svc = InboxService()
             svc.deliver_pending("t1")
 
         mock_term_svc.send_input.assert_called_once()
+        mock_record_status.assert_called_once_with(
+            "t1", TerminalStatus.PROCESSING.value
+        )
 
     @patch("cli_agent_orchestrator.services.inbox_service.update_message_status")
     @patch("cli_agent_orchestrator.services.inbox_service.terminal_service")
@@ -297,7 +330,9 @@ class TestEagerInboxDelivery:
         provider.accepts_input_while_processing = False
         mock_pm.get_provider.return_value = provider
 
-        with patch("cli_agent_orchestrator.services.inbox_service.EAGER_INBOX_DELIVERY", True):
+        with patch(
+            "cli_agent_orchestrator.services.inbox_service.EAGER_INBOX_DELIVERY", True
+        ):
             svc = InboxService()
             svc.deliver_pending("t1")
 
@@ -318,7 +353,9 @@ class TestEagerInboxDelivery:
         provider.accepts_input_while_processing = True
         mock_pm.get_provider.return_value = provider
 
-        with patch("cli_agent_orchestrator.services.inbox_service.EAGER_INBOX_DELIVERY", False):
+        with patch(
+            "cli_agent_orchestrator.services.inbox_service.EAGER_INBOX_DELIVERY", False
+        ):
             svc = InboxService()
             svc.deliver_pending("t1")
 
@@ -339,7 +376,9 @@ class TestEagerInboxDelivery:
         provider.accepts_input_while_processing = True
         mock_pm.get_provider.return_value = provider
 
-        with patch("cli_agent_orchestrator.services.inbox_service.EAGER_INBOX_DELIVERY", True):
+        with patch(
+            "cli_agent_orchestrator.services.inbox_service.EAGER_INBOX_DELIVERY", True
+        ):
             svc = InboxService()
             svc.deliver_pending("t1")
 
@@ -360,7 +399,9 @@ class TestEagerInboxDelivery:
         provider.accepts_input_while_processing = True
         mock_pm.get_provider.return_value = provider
 
-        with patch("cli_agent_orchestrator.services.inbox_service.EAGER_INBOX_DELIVERY", True):
+        with patch(
+            "cli_agent_orchestrator.services.inbox_service.EAGER_INBOX_DELIVERY", True
+        ):
             svc = InboxService()
             svc.deliver_pending("t1")
 
@@ -370,7 +411,9 @@ class TestEagerInboxDelivery:
 class TestPollOpenCodePendingMessages:
     """Tests for the OpenCode inbox poller."""
 
-    @patch("cli_agent_orchestrator.services.inbox_service.list_pending_receiver_ids_by_provider")
+    @patch(
+        "cli_agent_orchestrator.services.inbox_service.list_pending_receiver_ids_by_provider"
+    )
     def test_polls_pending_opencode_receivers(self, mock_list_receivers):
         """Test poller attempts delivery for each pending OpenCode receiver."""
         mock_list_receivers.return_value = ["receiver-1", "receiver-2"]
@@ -385,7 +428,9 @@ class TestPollOpenCodePendingMessages:
             call("receiver-2", registry=None),
         ]
 
-    @patch("cli_agent_orchestrator.services.inbox_service.list_pending_receiver_ids_by_provider")
+    @patch(
+        "cli_agent_orchestrator.services.inbox_service.list_pending_receiver_ids_by_provider"
+    )
     def test_survives_per_receiver_failure(self, mock_list_receivers):
         """Test one failed receiver does not stop the poll loop."""
         mock_list_receivers.return_value = ["receiver-1", "receiver-2"]
@@ -400,7 +445,9 @@ class TestPollOpenCodePendingMessages:
 class TestPollCodexPendingMessages:
     """Tests for the codex inbox poller (log-render status recompute)."""
 
-    @patch("cli_agent_orchestrator.services.inbox_service.list_pending_receiver_ids_by_provider")
+    @patch(
+        "cli_agent_orchestrator.services.inbox_service.list_pending_receiver_ids_by_provider"
+    )
     def test_delivers_when_recomputed_status_idle(self, mock_list_receivers):
         """Idle recomputed status -> delivery with an authoritative status_override."""
         mock_list_receivers.return_value = ["receiver-1"]
@@ -412,10 +459,15 @@ class TestPollCodexPendingMessages:
 
         mock_list_receivers.assert_called_once_with("codex")
         svc.deliver_pending.assert_called_once_with(
-            "receiver-1", num_messages=0, registry=None, status_override=TerminalStatus.IDLE
+            "receiver-1",
+            num_messages=0,
+            registry=None,
+            status_override=TerminalStatus.IDLE,
         )
 
-    @patch("cli_agent_orchestrator.services.inbox_service.list_pending_receiver_ids_by_provider")
+    @patch(
+        "cli_agent_orchestrator.services.inbox_service.list_pending_receiver_ids_by_provider"
+    )
     def test_skips_when_recomputed_status_processing(self, mock_list_receivers):
         """A genuinely busy codex (PROCESSING) is never pasted into."""
         mock_list_receivers.return_value = ["receiver-1"]
@@ -427,7 +479,9 @@ class TestPollCodexPendingMessages:
 
         svc.deliver_pending.assert_not_called()
 
-    @patch("cli_agent_orchestrator.services.inbox_service.list_pending_receiver_ids_by_provider")
+    @patch(
+        "cli_agent_orchestrator.services.inbox_service.list_pending_receiver_ids_by_provider"
+    )
     def test_skips_when_status_unavailable(self, mock_list_receivers):
         """None (log/pane unavailable) -> skip, never guess."""
         mock_list_receivers.return_value = ["receiver-1"]
@@ -439,7 +493,9 @@ class TestPollCodexPendingMessages:
 
         svc.deliver_pending.assert_not_called()
 
-    @patch("cli_agent_orchestrator.services.inbox_service.list_pending_receiver_ids_by_provider")
+    @patch(
+        "cli_agent_orchestrator.services.inbox_service.list_pending_receiver_ids_by_provider"
+    )
     def test_survives_per_receiver_failure(self, mock_list_receivers):
         """One failing receiver does not stop the loop."""
         mock_list_receivers.return_value = ["receiver-1", "receiver-2"]
@@ -452,7 +508,10 @@ class TestPollCodexPendingMessages:
         svc.poll_codex_pending_messages()
 
         svc.deliver_pending.assert_called_once_with(
-            "receiver-2", num_messages=0, registry=None, status_override=TerminalStatus.COMPLETED
+            "receiver-2",
+            num_messages=0,
+            registry=None,
+            status_override=TerminalStatus.COMPLETED,
         )
 
 
@@ -470,7 +529,9 @@ class TestDeliverPendingStatusOverride:
         mock_get.return_value = [_make_message()]
 
         svc = InboxService()
-        svc.deliver_pending("t1", num_messages=0, status_override=TerminalStatus.COMPLETED)
+        svc.deliver_pending(
+            "t1", num_messages=0, status_override=TerminalStatus.COMPLETED
+        )
 
         mock_term_svc.send_input.assert_called_once()
         mock_monitor.get_status.assert_not_called()
@@ -489,7 +550,9 @@ class TestDeliverPendingStatusOverride:
         provider.accepts_input_while_processing = False
         mock_pm.get_provider.return_value = provider
 
-        with patch("cli_agent_orchestrator.services.inbox_service.EAGER_INBOX_DELIVERY", False):
+        with patch(
+            "cli_agent_orchestrator.services.inbox_service.EAGER_INBOX_DELIVERY", False
+        ):
             svc = InboxService()
             svc.deliver_pending("t1", status_override=TerminalStatus.PROCESSING)
 
@@ -499,7 +562,9 @@ class TestDeliverPendingStatusOverride:
 class TestReconcileOrphanedMessages:
     """Tests for the provider-agnostic inbox reconciliation sweep (issue #131)."""
 
-    @patch("cli_agent_orchestrator.services.inbox_service.list_pending_receiver_ids_older_than")
+    @patch(
+        "cli_agent_orchestrator.services.inbox_service.list_pending_receiver_ids_older_than"
+    )
     def test_reconciles_stale_receivers(self, mock_list_receivers):
         """Sweep attempts delivery for each receiver with an orphaned message."""
         mock_list_receivers.return_value = ["receiver-1", "receiver-2"]
@@ -514,7 +579,9 @@ class TestReconcileOrphanedMessages:
             call("receiver-2", registry=None),
         ]
 
-    @patch("cli_agent_orchestrator.services.inbox_service.list_pending_receiver_ids_older_than")
+    @patch(
+        "cli_agent_orchestrator.services.inbox_service.list_pending_receiver_ids_older_than"
+    )
     def test_survives_per_receiver_failure(self, mock_list_receivers):
         """One failed receiver does not stop the sweep."""
         mock_list_receivers.return_value = ["receiver-1", "receiver-2"]
@@ -677,4 +744,6 @@ class TestRun:
             except asyncio.CancelledError:
                 pass
 
-        mock_to_thread.assert_awaited_once_with(svc.deliver_pending, "abc123", registry=None)
+        mock_to_thread.assert_awaited_once_with(
+            svc.deliver_pending, "abc123", registry=None
+        )

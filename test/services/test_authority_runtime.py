@@ -17,7 +17,9 @@ from cli_agent_orchestrator.services.authority_manifest import AuthorityRunManif
 def _proc_entry(proc_root: Path, pid: int, command: list[str]) -> None:
     entry = proc_root / str(pid)
     entry.mkdir()
-    (entry / "cmdline").write_bytes(b"\0".join(part.encode() for part in command) + b"\0")
+    (entry / "cmdline").write_bytes(
+        b"\0".join(part.encode() for part in command) + b"\0"
+    )
 
 
 def test_find_authority_processes_matches_provider_and_exact_uuid(tmp_path: Path):
@@ -25,7 +27,9 @@ def test_find_authority_processes_matches_provider_and_exact_uuid(tmp_path: Path
     proc_root.mkdir()
     session_id = "11111111-1111-4111-8111-111111111111"
     _proc_entry(proc_root, 101, ["codex", "resume", session_id])
-    _proc_entry(proc_root, 102, ["claude", "--resume", "22222222-2222-4222-8222-222222222222"])
+    _proc_entry(
+        proc_root, 102, ["claude", "--resume", "22222222-2222-4222-8222-222222222222"]
+    )
     _proc_entry(proc_root, 103, ["bash", "-c", session_id])
 
     assert find_authority_processes("codex", session_id, proc_root=proc_root) == [101]
@@ -42,7 +46,9 @@ def test_find_mailbox_watchers(tmp_path: Path):
 
 def test_filesystem_type_uses_longest_mountpoint(tmp_path: Path):
     mounts = tmp_path / "mounts"
-    mounts.write_text("/dev/sdd / ext4 rw 0 0\n" "C:\\040drive /mnt/c 9p rw,aname=drvfs 0 0\n")
+    mounts.write_text(
+        "/dev/sdd / ext4 rw 0 0\nC:\\040drive /mnt/c 9p rw,aname=drvfs 0 0\n"
+    )
 
     assert filesystem_type(Path("/mnt/c/project"), mounts_path=mounts) == "9p"
     assert filesystem_type(Path("/home/user/project"), mounts_path=mounts) == "ext4"
@@ -169,8 +175,16 @@ def test_start_persists_only_the_two_create_response_roles(tmp_path: Path):
     runtime.session_exists = Mock(return_value=False)  # type: ignore[method-assign]
     runtime._create_session = Mock(return_value=(project, technical))  # type: ignore[method-assign]
     runtime._terminals_from_manifest = Mock(return_value=[project, technical])  # type: ignore[method-assign]
+    reconcile = Mock()
+    runtime._request = Mock(return_value=reconcile)  # type: ignore[method-assign]
 
     assert runtime.start(attach=False) == [project, technical]
+    runtime._request.assert_called_once_with(
+        "POST",
+        "/authority/reconcile-generation",
+        params={"generation_id": runtime.manifests.load().generation_id},
+    )
+    reconcile.raise_for_status.assert_called_once_with()
 
     manifest = runtime.manifests.load()
     assert manifest is not None
@@ -232,7 +246,10 @@ def test_current_generation_filters_historical_terminal_rows(tmp_path: Path):
     runtime = _runtime(tmp_path)
     manifest = _running_manifest(runtime)
     responses = []
-    for payload in (_terminal(runtime, "project-director"), _terminal(runtime, "technical-director")):
+    for payload in (
+        _terminal(runtime, "project-director"),
+        _terminal(runtime, "technical-director"),
+    ):
         response = Mock()
         response.json.return_value = payload
         responses.append(response)
@@ -269,8 +286,15 @@ def test_role_send_uses_current_generation_and_reports_pending(tmp_path: Path):
     assert result["queue_status"] == "pending"
     runtime._request.assert_called_once_with(
         "POST",
-        "/terminals/bbbbbbbb/inbox/messages",
-        params={"sender_id": "aaaaaaaa", "message": "review S1"},
+        "/authority/inbox/messages",
+        params={
+            "sender_id": "aaaaaaaa",
+            "receiver_id": "bbbbbbbb",
+            "message": "review S1",
+            "generation_id": "generation-1",
+            "require_callback": True,
+            "reply_to": None,
+        },
     )
 
 

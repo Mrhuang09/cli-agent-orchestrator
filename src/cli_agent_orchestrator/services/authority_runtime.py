@@ -10,12 +10,19 @@ import subprocess
 import sys
 import time
 import uuid
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import requests
 
-from cli_agent_orchestrator.constants import API_BASE_URL, SERVER_HOST, SERVER_PORT
+from cli_agent_orchestrator.constants import (
+    API_BASE_URL,
+    AUTHORITY_CALLBACK_ESCALATION_SECONDS,
+    AUTHORITY_CALLBACK_REMINDER_SECONDS,
+    SERVER_HOST,
+    SERVER_PORT,
+)
 from cli_agent_orchestrator.services.authority_config import (
     PROJECT_PROFILE_NAME,
     TECHNICAL_PROFILE_NAME,
@@ -90,7 +97,9 @@ def _unescape_mount(value: str) -> str:
     return value.replace("\\040", " ").replace("\\011", "\t").replace("\\134", "\\")
 
 
-def filesystem_type(path: Path, *, mounts_path: Path = Path("/proc/mounts")) -> str | None:
+def filesystem_type(
+    path: Path, *, mounts_path: Path = Path("/proc/mounts")
+) -> str | None:
     """Return the filesystem type for a path using the longest matching mountpoint."""
     target = path.expanduser().resolve()
     best: tuple[int, str] | None = None
@@ -165,7 +174,9 @@ class AuthorityRuntime:
     def session_exists(self) -> bool:
         if not self.server_ready():
             return False
-        response = self._request("GET", f"/sessions/{self.config.effective_session_name}")
+        response = self._request(
+            "GET", f"/sessions/{self.config.effective_session_name}"
+        )
         if response.status_code == 404:
             return False
         response.raise_for_status()
@@ -205,11 +216,15 @@ class AuthorityRuntime:
         sibling = Path(sys.executable).with_name("cao-server")
         if sibling.is_file():
             return str(sibling)
-        raise RuntimeError("cao-server executable not found in PATH or beside the Python runtime")
+        raise RuntimeError(
+            "cao-server executable not found in PATH or beside the Python runtime"
+        )
 
     def _start_server(self) -> int:
         if _port_in_use(SERVER_HOST, SERVER_PORT):
-            raise RuntimeError(f"port {SERVER_PORT} is already occupied by an unrecognized service")
+            raise RuntimeError(
+                f"port {SERVER_PORT} is already occupied by an unrecognized service"
+            )
         self.config.state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         os.chmod(self.config.state_dir, 0o700)
         log_path = self.config.state_dir / "server.stdout.log"
@@ -284,7 +299,9 @@ class AuthorityRuntime:
             second.raise_for_status()
             second_payload = second.json()
             if not isinstance(second_payload, dict):
-                raise RuntimeError("CAO returned an invalid technical-director terminal")
+                raise RuntimeError(
+                    "CAO returned an invalid technical-director terminal"
+                )
         except Exception:
             try:
                 self._request(
@@ -313,7 +330,9 @@ class AuthorityRuntime:
                 f"got {terminal.get('provider')!r}"
             )
         if terminal.get("session_name") != self.config.effective_session_name:
-            raise RuntimeError(f"authority terminal {role} belongs to the wrong session")
+            raise RuntimeError(
+                f"authority terminal {role} belongs to the wrong session"
+            )
         if not terminal.get("id") or not terminal.get("name"):
             raise RuntimeError(f"authority terminal {role} lacks an ID or tmux window")
 
@@ -332,7 +351,9 @@ class AuthorityRuntime:
         ):
             raise RuntimeError("authority manifest does not belong to this project")
         if self._owned_server_pid() != manifest.server_pid or not self.server_ready():
-            raise RuntimeError("authority manifest server is not the verified owned server")
+            raise RuntimeError(
+                "authority manifest server is not the verified owned server"
+            )
         return manifest
 
     def _terminal_for_id(self, terminal_id: str) -> dict[str, Any]:
@@ -340,7 +361,9 @@ class AuthorityRuntime:
         response.raise_for_status()
         payload = response.json()
         if not isinstance(payload, dict):
-            raise RuntimeError(f"CAO returned invalid terminal detail for {terminal_id}")
+            raise RuntimeError(
+                f"CAO returned invalid terminal detail for {terminal_id}"
+            )
         return payload
 
     def _terminals_from_manifest(
@@ -349,7 +372,9 @@ class AuthorityRuntime:
     ) -> list[dict[str, Any]]:
         project = self._terminal_for_id(str(manifest.project_director_terminal_id))
         technical = self._terminal_for_id(str(manifest.technical_director_terminal_id))
-        self._validate_role_terminal(project, role=ROLE_PROJECT_DIRECTOR, provider="codex")
+        self._validate_role_terminal(
+            project, role=ROLE_PROJECT_DIRECTOR, provider="codex"
+        )
         self._validate_role_terminal(
             technical,
             role=ROLE_TECHNICAL_DIRECTOR,
@@ -372,7 +397,9 @@ class AuthorityRuntime:
         with self.manifests.lock():
             manifest = self.manifests.load()
             if manifest is not None and manifest.lifecycle == "running":
-                terminals = self._terminals_from_manifest(self._running_manifest(manifest))
+                terminals = self._terminals_from_manifest(
+                    self._running_manifest(manifest)
+                )
                 if attach:
                     self.attach()
                 return terminals
@@ -438,7 +465,9 @@ class AuthorityRuntime:
                     )
                     stale.raise_for_status()
                     if self.session_exists():
-                        raise RuntimeError("stale authority session rows could not be removed")
+                        raise RuntimeError(
+                            "stale authority session rows could not be removed"
+                        )
 
                 project, technical = self._create_session()
                 self._validate_role_terminal(
@@ -459,6 +488,12 @@ class AuthorityRuntime:
                     technical_director_window=technical["name"],
                 )
                 self.manifests.save(generation)
+                reconcile = self._request(
+                    "POST",
+                    "/authority/reconcile-generation",
+                    params={"generation_id": generation.generation_id},
+                )
+                reconcile.raise_for_status()
                 terminals = self._terminals_from_manifest(generation)
             except Exception as start_error:
                 cleanup_errors: list[Exception] = []
@@ -469,7 +504,9 @@ class AuthorityRuntime:
                 ):
                     try:
                         action()
-                    except Exception as cleanup_error:  # keep trying every owned resource
+                    except (
+                        Exception
+                    ) as cleanup_error:  # keep trying every owned resource
                         cleanup_errors.append(cleanup_error)
                 failed = generation.evolve(
                     lifecycle="failed",
@@ -503,6 +540,13 @@ class AuthorityRuntime:
 
     def status(self) -> list[dict[str, Any]]:
         manifest = self._running_manifest()
+        callbacks_response = self._request(
+            "GET",
+            "/authority/callbacks",
+            params={"generation_id": manifest.generation_id},
+        )
+        callbacks_response.raise_for_status()
+        callbacks = callbacks_response.json()
         result: list[dict[str, Any]] = []
         for terminal in self._terminals_from_manifest(manifest):
             terminal_id = terminal["id"]
@@ -516,6 +560,37 @@ class AuthorityRuntime:
             )
             pending.raise_for_status()
             item["pending"] = len(pending.json())
+            unresolved = [
+                callback
+                for callback in callbacks
+                if terminal_id
+                in {callback.get("sender_id"), callback.get("receiver_id")}
+                and callback.get("state") not in {"acknowledged", "cancelled"}
+            ]
+            state_counts: dict[str, int] = {}
+            callback_details: list[dict[str, Any]] = []
+            for callback in unresolved:
+                state = str(callback.get("state", "unknown"))
+                state_counts[state] = state_counts.get(state, 0) + 1
+                detail = {
+                    "request_message_id": callback.get("request_message_id"),
+                    "state": state,
+                }
+                completed_at = callback.get("completed_at")
+                if completed_at:
+                    completed = datetime.fromisoformat(str(completed_at))
+                    detail["reminder_due_at"] = (
+                        completed
+                        + timedelta(seconds=AUTHORITY_CALLBACK_REMINDER_SECONDS)
+                    ).isoformat()
+                    detail["escalation_due_at"] = (
+                        completed
+                        + timedelta(seconds=AUTHORITY_CALLBACK_ESCALATION_SECONDS)
+                    ).isoformat()
+                callback_details.append(detail)
+            item["callbacks"] = len(unresolved)
+            item["callback_states"] = state_counts
+            item["unresolved_callbacks"] = callback_details
             result.append(item)
         return result
 
@@ -579,7 +654,10 @@ class AuthorityRuntime:
         )
         response.raise_for_status()
         deadline = time.monotonic() + 10
-        while _tmux_windows(self.config.effective_session_name) and time.monotonic() < deadline:
+        while (
+            _tmux_windows(self.config.effective_session_name)
+            and time.monotonic() < deadline
+        ):
             time.sleep(0.1)
         if _tmux_windows(self.config.effective_session_name):
             raise RuntimeError("authority tmux session did not stop")
@@ -599,7 +677,10 @@ class AuthorityRuntime:
                 f"failed to stop authority tmux session: {result.stderr.strip()}"
             )
         deadline = time.monotonic() + 5
-        while _tmux_windows(self.config.effective_session_name) and time.monotonic() < deadline:
+        while (
+            _tmux_windows(self.config.effective_session_name)
+            and time.monotonic() < deadline
+        ):
             time.sleep(0.1)
         if _tmux_windows(self.config.effective_session_name):
             raise RuntimeError("authority tmux session remains after forced cleanup")
@@ -628,6 +709,8 @@ class AuthorityRuntime:
         from_role: str | None = None,
         wait_delivered: bool = False,
         timeout: float = 30.0,
+        require_callback: bool = True,
+        reply_to: int | None = None,
     ) -> dict[str, Any]:
         if not message.strip():
             raise ValueError("authority message must not be empty")
@@ -660,10 +743,19 @@ class AuthorityRuntime:
         if sender_id == receiver_id:
             raise ValueError("authority sender and receiver must be different roles")
 
+        if reply_to is not None:
+            require_callback = False
         response = self._request(
             "POST",
-            f"/terminals/{receiver_id}/inbox/messages",
-            params={"sender_id": sender_id, "message": message},
+            "/authority/inbox/messages",
+            params={
+                "sender_id": sender_id,
+                "receiver_id": receiver_id,
+                "message": message,
+                "generation_id": manifest.generation_id,
+                "require_callback": require_callback,
+                "reply_to": reply_to,
+            },
         )
         response.raise_for_status()
         payload = response.json()
@@ -676,14 +768,18 @@ class AuthorityRuntime:
             while time.monotonic() < deadline:
                 current = self.manifests.load()
                 if current is None or current.generation_id != manifest.generation_id:
-                    raise RuntimeError("authority generation changed while waiting for delivery")
+                    raise RuntimeError(
+                        "authority generation changed while waiting for delivery"
+                    )
                 inbox = self._request(
                     "GET",
                     f"/terminals/{receiver_id}/inbox/messages",
                     params={"limit": 100},
                 )
                 inbox.raise_for_status()
-                matches = [item for item in inbox.json() if item.get("id") == message_id]
+                matches = [
+                    item for item in inbox.json() if item.get("id") == message_id
+                ]
                 if matches and matches[0].get("status") in {"delivered", "failed"}:
                     payload["queue_status"] = matches[0]["status"]
                     return payload
@@ -701,6 +797,18 @@ class AuthorityRuntime:
             self.manifests.save(manifest.evolve(lifecycle="stopping"))
             cleanup_errors: list[Exception] = []
             results: list[bool] = []
+            try:
+                cancelled = self._request(
+                    "POST",
+                    "/authority/cancel-generation",
+                    params={"generation_id": manifest.generation_id},
+                )
+                cancelled.raise_for_status()
+            except Exception:
+                # Stopping must still clean owned tmux/server resources when the
+                # API is already unavailable. Old callbacks are reconciled on
+                # the next generation start as a second line of defense.
+                pass
             for action in (
                 self._delete_current_session_if_present,
                 self._kill_authority_tmux_if_present,
@@ -711,10 +819,14 @@ class AuthorityRuntime:
                 except Exception as cleanup_error:
                     cleanup_errors.append(cleanup_error)
             if _tmux_windows(self.config.effective_session_name):
-                cleanup_errors.append(RuntimeError("authority tmux session remains after stop"))
+                cleanup_errors.append(
+                    RuntimeError("authority tmux session remains after stop")
+                )
             if _port_in_use(SERVER_HOST, SERVER_PORT):
                 cleanup_errors.append(
-                    RuntimeError(f"CAO server port {SERVER_PORT} remains occupied after stop")
+                    RuntimeError(
+                        f"CAO server port {SERVER_PORT} remains occupied after stop"
+                    )
                 )
             if cleanup_errors:
                 self.manifests.save(manifest.evolve(lifecycle="failed"))

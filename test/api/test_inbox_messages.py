@@ -8,7 +8,12 @@ import pytest
 from fastapi.testclient import TestClient
 
 from cli_agent_orchestrator.api.main import app
-from cli_agent_orchestrator.models.inbox import InboxMessage, MessageStatus
+from cli_agent_orchestrator.models.inbox import (
+    AuthorityCallback,
+    AuthorityCallbackState,
+    InboxMessage,
+    MessageStatus,
+)
 
 
 @pytest.fixture
@@ -99,16 +104,22 @@ class TestGetInboxMessagesEndpoint:
         with patch("cli_agent_orchestrator.api.main.get_inbox_messages") as mock_get:
             mock_get.return_value = sample_inbox_messages[:1]
 
-            response = client.get("/terminals/abcdef12/inbox/messages?status=pending&limit=5")
+            response = client.get(
+                "/terminals/abcdef12/inbox/messages?status=pending&limit=5"
+            )
 
             assert response.status_code == 200
             data = response.json()
             assert len(data) == 1
-            mock_get.assert_called_once_with("abcdef12", limit=5, status=MessageStatus.PENDING)
+            mock_get.assert_called_once_with(
+                "abcdef12", limit=5, status=MessageStatus.PENDING
+            )
 
     def test_invalid_status_parameter(self, client):
         """Test error handling for invalid status parameter."""
-        response = client.get("/terminals/abcdef12/inbox/messages?status=invalid_status")
+        response = client.get(
+            "/terminals/abcdef12/inbox/messages?status=invalid_status"
+        )
 
         assert response.status_code == 400
         data = response.json()
@@ -188,10 +199,14 @@ class TestGetInboxMessagesEndpoint:
                 msg for msg in sample_inbox_messages if msg.status.value == status_value
             ]
 
-            with patch("cli_agent_orchestrator.api.main.get_inbox_messages") as mock_get:
+            with patch(
+                "cli_agent_orchestrator.api.main.get_inbox_messages"
+            ) as mock_get:
                 mock_get.return_value = filtered_messages
 
-                response = client.get(f"/terminals/abcdef12/inbox/messages?status={status_value}")
+                response = client.get(
+                    f"/terminals/abcdef12/inbox/messages?status={status_value}"
+                )
 
                 assert response.status_code == 200
                 data = response.json()
@@ -212,7 +227,10 @@ class TestDatabaseFunctionCompatibility:
 
     def test_get_pending_messages_backward_compatibility(self):
         """Test that get_pending_messages still works as before."""
-        from cli_agent_orchestrator.clients.database import get_inbox_messages, get_pending_messages
+        from cli_agent_orchestrator.clients.database import (
+            get_inbox_messages,
+            get_pending_messages,
+        )
 
         # Both functions should be callable
         assert callable(get_pending_messages)
@@ -236,3 +254,68 @@ class TestDatabaseFunctionCompatibility:
         # This should work without errors
         result = get_pending_messages("test_terminal", limit=5)
         assert isinstance(result, list)
+
+
+class TestAuthorityCallbackEndpoints:
+    def test_create_authority_request_returns_callback_state(self, client):
+        created = datetime(2026, 7, 18, 12, 0, 0)
+        message = InboxMessage(
+            id=41,
+            sender_id="director",
+            receiver_id="abcdef12",
+            message="review",
+            status=MessageStatus.PENDING,
+            created_at=created,
+        )
+        callback = AuthorityCallback(
+            request_message_id=41,
+            generation_id="generation-1",
+            sender_id="director",
+            receiver_id="abcdef12",
+            state=AuthorityCallbackState.WAITING_DELIVERY,
+            created_at=created,
+        )
+        with (
+            patch(
+                "cli_agent_orchestrator.api.main.create_authority_message",
+                return_value=(message, callback),
+            ) as create,
+            patch("cli_agent_orchestrator.api.main.inbox_service.deliver_pending"),
+        ):
+            response = client.post(
+                "/authority/inbox/messages",
+                params={
+                    "sender_id": "director",
+                    "receiver_id": "abcdef12",
+                    "message": "review",
+                    "generation_id": "generation-1",
+                },
+            )
+
+        assert response.status_code == 200
+        assert response.json()["callback_state"] == "waiting_delivery"
+        create.assert_called_once_with(
+            "director",
+            "abcdef12",
+            "review",
+            "generation-1",
+            require_callback=True,
+            reply_to=None,
+        )
+
+    def test_create_authority_reply_conflict_is_409(self, client):
+        with patch(
+            "cli_agent_orchestrator.api.main.create_authority_message",
+            side_effect=ValueError("authority reply roles do not reverse"),
+        ):
+            response = client.post(
+                "/authority/inbox/messages",
+                params={
+                    "sender_id": "director",
+                    "receiver_id": "abcdef12",
+                    "message": "bad reply",
+                    "generation_id": "generation-1",
+                    "reply_to": 41,
+                },
+            )
+        assert response.status_code == 409

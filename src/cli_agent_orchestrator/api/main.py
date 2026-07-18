@@ -39,10 +39,15 @@ from cli_agent_orchestrator.backends import TerminalNotFoundError
 from cli_agent_orchestrator.backends.herdr_backend import HerdrBackend
 from cli_agent_orchestrator.backends.registry import get_backend
 from cli_agent_orchestrator.clients.database import (
+    cancel_authority_callbacks_for_generation,
+    cancel_authority_callbacks_except,
+    create_authority_message,
     create_inbox_message,
+    get_authority_callback,
     get_inbox_messages,
     get_terminal_metadata,
     init_db,
+    list_authority_callbacks,
 )
 from cli_agent_orchestrator.constants import (
     ALLOWED_HOSTS,
@@ -94,7 +99,13 @@ from cli_agent_orchestrator.services import (
     session_service,
     terminal_service,
 )
-from cli_agent_orchestrator.services.agent_step import StepExecutionError, run_agent_step
+from cli_agent_orchestrator.services.agent_step import (
+    StepExecutionError,
+    run_agent_step,
+)
+from cli_agent_orchestrator.services.authority_callback_watchdog import (
+    authority_callback_watchdog,
+)
 from cli_agent_orchestrator.services.cleanup_service import (
     cleanup_expired_memories,
     cleanup_old_data,
@@ -110,8 +121,14 @@ from cli_agent_orchestrator.services.install_service import InstallResult, insta
 from cli_agent_orchestrator.services.log_writer import log_writer
 from cli_agent_orchestrator.services.status_monitor import status_monitor
 from cli_agent_orchestrator.services.step_output_store import _validate_key_part
-from cli_agent_orchestrator.services.terminal_service import OutputMode, TerminalInputBlockedError
-from cli_agent_orchestrator.utils.agent_profiles import load_agent_profile, resolve_provider
+from cli_agent_orchestrator.services.terminal_service import (
+    OutputMode,
+    TerminalInputBlockedError,
+)
+from cli_agent_orchestrator.utils.agent_profiles import (
+    load_agent_profile,
+    resolve_provider,
+)
 from cli_agent_orchestrator.utils.logging import setup_logging
 from cli_agent_orchestrator.utils.skills import (
     SkillNameError,
@@ -154,7 +171,9 @@ async def opencode_inbox_delivery_daemon(registry: PluginRegistry) -> None:
     while True:
         await asyncio.sleep(INBOX_POLLING_INTERVAL)
         try:
-            await asyncio.to_thread(inbox_service.poll_opencode_pending_messages, registry)
+            await asyncio.to_thread(
+                inbox_service.poll_opencode_pending_messages, registry
+            )
         except Exception:
             logger.exception("OpenCode inbox delivery poller error")
 
@@ -218,7 +237,9 @@ class RunStepRequest(BaseModel):
 
     provider: str = Field(description="Provider type (e.g. 'kiro_cli', 'claude_code')")
     agent: str = Field(description="Agent profile name")
-    prompt: str = Field(description="Prompt to send (caller applies any prompt shaping first)")
+    prompt: str = Field(
+        description="Prompt to send (caller applies any prompt shaping first)"
+    )
     session_name: Optional[str] = Field(
         default=None,
         description="Existing session to create the terminal in; auto-generated if None",
@@ -230,7 +251,9 @@ class RunStepRequest(BaseModel):
         default=True,
         description="Delete the created terminal after the step (ignored when reusing)",
     )
-    timeout: float = Field(default=600.0, description="Max seconds to wait for completion", gt=0)
+    timeout: float = Field(
+        default=600.0, description="Max seconds to wait for completion", gt=0
+    )
     working_directory: Optional[str] = Field(
         default=None, description="Working directory for a freshly created terminal"
     )
@@ -309,9 +332,13 @@ class RunStepRequest(BaseModel):
         has_run = "CAO_WORKFLOW_RUN_ID" in keys
         has_gen = "CAO_WORKFLOW_GENERATION" in keys
         if has_run and not has_gen:
-            raise ValueError("CAO_WORKFLOW_RUN_ID requires CAO_WORKFLOW_GENERATION (required pair)")
+            raise ValueError(
+                "CAO_WORKFLOW_RUN_ID requires CAO_WORKFLOW_GENERATION (required pair)"
+            )
         if has_gen and not has_run:
-            raise ValueError("CAO_WORKFLOW_GENERATION requires CAO_WORKFLOW_RUN_ID (required pair)")
+            raise ValueError(
+                "CAO_WORKFLOW_GENERATION requires CAO_WORKFLOW_RUN_ID (required pair)"
+            )
         if "CAO_WORKFLOW_STEP_ID" in keys and not has_run:
             raise ValueError("CAO_WORKFLOW_STEP_ID requires CAO_WORKFLOW_RUN_ID")
         if self.env_vars and self.reuse_terminal_id:
@@ -349,14 +376,17 @@ class StepOutputRequest(BaseModel):
 
     output: Dict = Field(description="The worker-emitted JSON output for the step")
     output_schema: Optional[Dict] = Field(
-        default=None, description="The step's JSON-Schema (Draft 2020-12); None = no validation"
+        default=None,
+        description="The step's JSON-Schema (Draft 2020-12); None = no validation",
     )
 
 
 class WorkflowRunRequest(BaseModel):
     """Request body for ``POST /workflows/runs`` (Bolt 3, N5, C5)."""
 
-    name_or_path: str = Field(description="Workflow name (indexed) or path to a spec YAML file")
+    name_or_path: str = Field(
+        description="Workflow name (indexed) or path to a spec YAML file"
+    )
     inputs: Dict = Field(
         default_factory=dict, description="Run inputs validated against spec.inputs"
     )
@@ -369,7 +399,9 @@ class WorkflowRunRequest(BaseModel):
 class GraphExportRequest(BaseModel):
     """Request body for ``POST /graph/{provider}/export`` (U4, Issue #348)."""
 
-    sink: str = Field(description="Registered sink name (resolved via get_sink; KeyError -> 404)")
+    sink: str = Field(
+        description="Registered sink name (resolved via get_sink; KeyError -> 404)"
+    )
     dest: str = Field(
         description=(
             "Export destination, confined UNDER the configured graph-export root "
@@ -483,7 +515,13 @@ async def lifespan(app: FastAPI):
     status_monitor_task = asyncio.create_task(status_monitor.run())
     log_writer_task = asyncio.create_task(log_writer.run())
     inbox_service_task = asyncio.create_task(inbox_service.run(registry))
-    logger.info("Event bus consumers started (StatusMonitor, LogWriter, InboxService)")
+    authority_callback_task = asyncio.create_task(
+        authority_callback_watchdog.run(registry)
+    )
+    logger.info(
+        "Event bus consumers started "
+        "(StatusMonitor, LogWriter, InboxService, AuthorityCallbackWatchdog)"
+    )
 
     # Start temporary OpenCode inbox poller. GH #115 tracks replacing this
     # provider-specific wakeup path with a unified delivery engine.
@@ -532,6 +570,7 @@ async def lifespan(app: FastAPI):
     status_monitor_task.cancel()
     log_writer_task.cancel()
     inbox_service_task.cancel()
+    authority_callback_task.cancel()
     # Cancel daemon on shutdown
     daemon_task.cancel()
 
@@ -540,6 +579,7 @@ async def lifespan(app: FastAPI):
             status_monitor_task,
             log_writer_task,
             inbox_service_task,
+            authority_callback_task,
             daemon_task,
             return_exceptions=True,
         )
@@ -662,7 +702,9 @@ async def oauth_protected_resource_metadata():
     byte-for-byte unchanged.
     """
     if not is_auth_enabled():
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="auth disabled")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="auth disabled"
+        )
 
     audience = (
         os.getenv("CAO_AUTH_AUDIENCE", "").strip()
@@ -731,7 +773,9 @@ def _require_mcp_apps_enabled() -> None:
 
 @app.get("/events")
 async def events_stream(
-    _scopes: List[str] = Depends(require_any_scope(SCOPE_READ, SCOPE_WRITE, SCOPE_ADMIN)),
+    _scopes: List[str] = Depends(
+        require_any_scope(SCOPE_READ, SCOPE_WRITE, SCOPE_ADMIN)
+    ),
 ):
     """Stream live, normalized fleet events to the iframe as Server-Sent Events.
 
@@ -763,7 +807,9 @@ async def events_history(
     limit: int = Query(default=RING_CAPACITY, ge=0, le=RING_CAPACITY),
     since: Optional[str] = None,
     kinds: Optional[str] = None,
-    _scopes: List[str] = Depends(require_any_scope(SCOPE_READ, SCOPE_WRITE, SCOPE_ADMIN)),
+    _scopes: List[str] = Depends(
+        require_any_scope(SCOPE_READ, SCOPE_WRITE, SCOPE_ADMIN)
+    ),
 ) -> Dict:
     """Replay recent fleet events from the ring buffer (JSON, newest-last).
 
@@ -830,7 +876,9 @@ async def get_agent_profile_endpoint(name: str) -> Dict:
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except RuntimeError as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e)
+        )
 
 
 @app.post("/agents/profiles/install")
@@ -852,7 +900,9 @@ async def install_agent_profile_endpoint(
         env_vars=request.env_vars,
     )
     if not result.success:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=result.message)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=result.message
+        )
 
     return result
 
@@ -882,7 +932,9 @@ async def list_providers_endpoint() -> List[Dict]:
 
 @app.get("/settings/agent-dirs")
 async def get_agent_dirs_endpoint(
-    _scopes: List[str] = Depends(require_any_scope(SCOPE_READ, SCOPE_WRITE, SCOPE_ADMIN)),
+    _scopes: List[str] = Depends(
+        require_any_scope(SCOPE_READ, SCOPE_WRITE, SCOPE_ADMIN)
+    ),
 ) -> Dict:
     """Get configured agent directories per provider.
 
@@ -1143,7 +1195,9 @@ async def delete_session(
         # A worker thread bounds the blast radius of any future stall to this
         # one request.
         result = await asyncio.to_thread(
-            session_service.delete_session, session_name, registry=get_plugin_registry(request)
+            session_service.delete_session,
+            session_name,
+            registry=get_plugin_registry(request),
         )
         return {"success": True, **result}
     except ValueError as e:
@@ -1194,7 +1248,9 @@ async def create_terminal_in_session(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     try:
         if provider is None:
-            resolved_provider = resolve_provider(agent_profile, fallback_provider="kiro_cli")
+            resolved_provider = resolve_provider(
+                agent_profile, fallback_provider="kiro_cli"
+            )
         else:
             resolved_provider = provider
 
@@ -1328,8 +1384,13 @@ async def get_terminal_memory_context(terminal_id: TerminalId):
         )
 
 
-@app.get("/terminals/{terminal_id}/working-directory", response_model=WorkingDirectoryResponse)
-async def get_terminal_working_directory(terminal_id: TerminalId) -> WorkingDirectoryResponse:
+@app.get(
+    "/terminals/{terminal_id}/working-directory",
+    response_model=WorkingDirectoryResponse,
+)
+async def get_terminal_working_directory(
+    terminal_id: TerminalId,
+) -> WorkingDirectoryResponse:
     """Get the current working directory of a terminal's pane."""
     try:
         working_directory = terminal_service.get_working_directory(terminal_id)
@@ -1395,7 +1456,9 @@ async def send_terminal_key(
 
     try:
         # Blocking tmux send-keys — off the loop.
-        success = await asyncio.to_thread(terminal_service.send_special_key, terminal_id, key)
+        success = await asyncio.to_thread(
+            terminal_service.send_special_key, terminal_id, key
+        )
         return {"success": success}
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
@@ -1498,7 +1561,9 @@ async def run_step(
     # can tear it down if the subprocess dies mid-call. No-op for YAML/handoff
     # callers (no run/step env or no script record in the registry).
     from cli_agent_orchestrator.services import workflow_service
-    from cli_agent_orchestrator.services.script_runner import make_step_terminal_recorder
+    from cli_agent_orchestrator.services.script_runner import (
+        make_step_terminal_recorder,
+    )
     from cli_agent_orchestrator.services.workflow_service import StaleGenerationError
 
     on_terminal_created = make_step_terminal_recorder(body.env_vars)
@@ -1541,7 +1606,11 @@ async def run_step(
         return RunStepResponse(
             terminal_id=result.terminal_id,
             last_message=result.last_message,
-            status=(result.status.value if hasattr(result.status, "value") else str(result.status)),
+            status=(
+                result.status.value
+                if hasattr(result.status, "value")
+                else str(result.status)
+            ),
         )
     except StepExecutionError as e:
         # The step did not complete successfully. Distinguish a worker that
@@ -1550,7 +1619,11 @@ async def run_step(
         # apart instead of reporting every failure as a timeout. The detail is a
         # structured object carrying terminal_id, so callers read it as a field
         # rather than regex-scraping the message (the future engine reads it too).
-        code = status.HTTP_502_BAD_GATEWAY if e.kind == "error" else status.HTTP_504_GATEWAY_TIMEOUT
+        code = (
+            status.HTTP_502_BAD_GATEWAY
+            if e.kind == "error"
+            else status.HTTP_504_GATEWAY_TIMEOUT
+        )
         raise HTTPException(
             status_code=code,
             detail={"message": str(e), "kind": e.kind, "terminal_id": e.terminal_id},
@@ -1592,7 +1665,9 @@ async def validate_workflow_endpoint(body: WorkflowValidateRequest) -> Dict:
 
 
 @app.get("/workflows")
-async def list_workflows_endpoint(dir: Optional[str] = Query(default=None)) -> List[Dict]:
+async def list_workflows_endpoint(
+    dir: Optional[str] = Query(default=None),
+) -> List[Dict]:
     """List indexed workflows, rebuilt from the spec files on disk (FR-2.1)."""
     from cli_agent_orchestrator.services import workflow_spec_service
 
@@ -1716,7 +1791,9 @@ async def start_workflow_run_endpoint(
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except workflow_service.WorkflowEngineError as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e)
+        )
     return result.model_dump()
 
 
@@ -1728,7 +1805,9 @@ async def get_workflow_run_endpoint(run_id: str) -> Dict:
     try:
         status_snapshot = workflow_service.get_run_status(run_id)
     except KeyError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"unknown run '{run_id}'")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"unknown run '{run_id}'"
+        )
     return status_snapshot.model_dump()
 
 
@@ -1743,7 +1822,9 @@ async def cancel_workflow_run_endpoint(
     try:
         workflow_service.cancel_run(run_id)
     except KeyError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"unknown run '{run_id}'")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"unknown run '{run_id}'"
+        )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
     return {"success": True, "run_id": run_id}
@@ -1768,7 +1849,9 @@ async def resume_workflow_run_endpoint(
     try:
         result = await workflow_service.resume_from_last_completed(run_id)
     except KeyError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"unknown run '{run_id}'")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"unknown run '{run_id}'"
+        )
     except workflow_service.ResumeNotAllowedError as e:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
     except workflow_service.ResumeCorruptError as e:
@@ -1778,7 +1861,9 @@ async def resume_workflow_run_endpoint(
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except workflow_service.WorkflowEngineError as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e)
+        )
     return result.model_dump()
 
 
@@ -1794,7 +1879,9 @@ async def resume_workflow_run_endpoint(
 async def get_graph_endpoint(
     provider: str,
     request: Request,
-    _scopes: List[str] = Depends(require_any_scope(SCOPE_READ, SCOPE_WRITE, SCOPE_ADMIN)),
+    _scopes: List[str] = Depends(
+        require_any_scope(SCOPE_READ, SCOPE_WRITE, SCOPE_ADMIN)
+    ),
 ) -> Dict:
     """Project a provider's GraphView and return its wire shape.
 
@@ -1962,7 +2049,9 @@ async def create_inbox_message_endpoint(
     # Attempt immediate delivery if terminal is already IDLE.
     # If not, InboxService will deliver on next IDLE status event.
     try:
-        inbox_service.deliver_pending(receiver_id, registry=get_plugin_registry(request))
+        inbox_service.deliver_pending(
+            receiver_id, registry=get_plugin_registry(request)
+        )
     except Exception as e:
         logger.warning(f"Immediate delivery attempt failed for {receiver_id}: {e}")
 
@@ -1975,10 +2064,115 @@ async def create_inbox_message_endpoint(
     }
 
 
+@app.post("/authority/inbox/messages")
+async def create_authority_message_endpoint(
+    request: Request,
+    receiver_id: TerminalId,
+    sender_id: str,
+    message: str,
+    generation_id: str,
+    require_callback: bool = True,
+    reply_to: int | None = None,
+    _scopes: List[str] = Depends(require_any_scope(SCOPE_WRITE, SCOPE_ADMIN)),
+) -> Dict:
+    """Create a correlated authority request or reply in one transaction."""
+    try:
+        inbox_msg, callback = create_authority_message(
+            sender_id,
+            receiver_id,
+            message,
+            generation_id,
+            require_callback=require_callback,
+            reply_to=reply_to,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create authority message: {exc}",
+        ) from exc
+
+    try:
+        inbox_service.deliver_pending(
+            receiver_id, registry=get_plugin_registry(request)
+        )
+    except Exception as exc:
+        logger.warning(
+            "Immediate authority delivery failed for %s: %s", receiver_id, exc
+        )
+
+    return {
+        "success": True,
+        "message_id": inbox_msg.id,
+        "sender_id": inbox_msg.sender_id,
+        "receiver_id": inbox_msg.receiver_id,
+        "created_at": inbox_msg.created_at.isoformat(),
+        "callback_request_id": callback.request_message_id if callback else None,
+        "callback_state": callback.state.value if callback else None,
+        "reply_to": reply_to,
+    }
+
+
+@app.get("/authority/callbacks")
+async def list_authority_callbacks_endpoint(
+    generation_id: str | None = None,
+    terminal_id: str | None = None,
+    _scopes: List[str] = Depends(require_any_scope(SCOPE_READ, SCOPE_ADMIN)),
+) -> List[Dict]:
+    """List durable authority callback state for status and diagnostics."""
+    return [
+        callback.model_dump(mode="json")
+        for callback in list_authority_callbacks(
+            generation_id=generation_id, terminal_id=terminal_id
+        )
+    ]
+
+
+@app.get("/authority/callbacks/{request_message_id}")
+async def get_authority_callback_endpoint(
+    request_message_id: int,
+    _scopes: List[str] = Depends(require_any_scope(SCOPE_READ, SCOPE_ADMIN)),
+) -> Dict:
+    callback = get_authority_callback(request_message_id)
+    if callback is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="callback not found"
+        )
+    return callback.model_dump(mode="json")
+
+
+@app.post("/authority/reconcile-generation")
+async def reconcile_authority_generation_endpoint(
+    generation_id: str,
+    _scopes: List[str] = Depends(require_any_scope(SCOPE_WRITE, SCOPE_ADMIN)),
+) -> Dict:
+    """Cancel unresolved callbacks from replaced authority generations."""
+    return {
+        "success": True,
+        "cancelled": cancel_authority_callbacks_except(generation_id),
+    }
+
+
+@app.post("/authority/cancel-generation")
+async def cancel_authority_generation_endpoint(
+    generation_id: str,
+    _scopes: List[str] = Depends(require_any_scope(SCOPE_WRITE, SCOPE_ADMIN)),
+) -> Dict:
+    return {
+        "success": True,
+        "cancelled": cancel_authority_callbacks_for_generation(generation_id),
+    }
+
+
 @app.get("/terminals/{terminal_id}/inbox/messages")
 async def get_inbox_messages_endpoint(
     terminal_id: TerminalId,
-    limit: int = Query(default=10, le=100, description="Maximum number of messages to retrieve"),
+    limit: int = Query(
+        default=10, le=100, description="Maximum number of messages to retrieve"
+    ),
     status_param: Optional[str] = Query(
         default=None, alias="status", description="Filter by message status"
     ),
@@ -2018,7 +2212,9 @@ async def get_inbox_messages_endpoint(
                     "receiver_id": msg.receiver_id,
                     "message": msg.message,
                     "status": msg.status.value,
-                    "created_at": msg.created_at.isoformat() if msg.created_at else None,
+                    "created_at": msg.created_at.isoformat()
+                    if msg.created_at
+                    else None,
                 }
             )
 
@@ -2057,7 +2253,9 @@ async def terminal_ws(websocket: WebSocket, terminal_id: str):
         and client_host is not None
         and client_host not in WS_ALLOWED_CLIENTS
     ):
-        await websocket.close(code=4003, reason="WebSocket access is restricted to allowed clients")
+        await websocket.close(
+            code=4003, reason="WebSocket access is restricted to allowed clients"
+        )
         return
 
     await websocket.accept()
@@ -2434,7 +2632,11 @@ async def list_memories_endpoint(
             search_mode="metadata",
         )
         if scope_id is not None:
-            memories = [m for m in memories if _memory_matches_scope_id(m, scope_id, svc.base_dir)]
+            memories = [
+                m
+                for m in memories
+                if _memory_matches_scope_id(m, scope_id, svc.base_dir)
+            ]
         return [_to_memory_summary(m, svc.base_dir) for m in memories[:limit]]
     except HTTPException:
         raise
@@ -2452,7 +2654,9 @@ async def export_memories_endpoint(
     scope_id: Optional[MemoryScopeId] = None,
     include_history: bool = False,
     redact: bool = False,
-    _scopes: List[str] = Depends(require_any_scope(SCOPE_READ, SCOPE_WRITE, SCOPE_ADMIN)),
+    _scopes: List[str] = Depends(
+        require_any_scope(SCOPE_READ, SCOPE_WRITE, SCOPE_ADMIN)
+    ),
 ):
     """Stream one scope as an archive tarball (#345 D6, read-only mirror).
 
@@ -2544,7 +2748,9 @@ async def get_memory_endpoint(
         for mem in memories:
             if mem.key != key:
                 continue
-            if scope_id is not None and not _memory_matches_scope_id(mem, scope_id, svc.base_dir):
+            if scope_id is not None and not _memory_matches_scope_id(
+                mem, scope_id, svc.base_dir
+            ):
                 continue
             return MemoryDetail(
                 content=mem.content,
@@ -2632,18 +2838,23 @@ async def clear_memories_endpoint(
             detail=f"Failed to clear memories: {str(e)}",
         )
     if scope_id is not None:
-        memories = [m for m in memories if _memory_matches_scope_id(m, scope_id, svc.base_dir)]
+        memories = [
+            m for m in memories if _memory_matches_scope_id(m, scope_id, svc.base_dir)
+        ]
 
     deleted_count = 0
     for mem in memories:
         try:
             # session/agent results carry scope_id natively; project results
             # need the query param (their recalled scope_id is None).
-            if await svc.forget(key=mem.key, scope=scope.value, scope_id=mem.scope_id or scope_id):
+            if await svc.forget(
+                key=mem.key, scope=scope.value, scope_id=mem.scope_id or scope_id
+            ):
                 deleted_count += 1
         except MemoryDisabledError:
             raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND, detail="Memory system is disabled"
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Memory system is disabled",
             )
         except Exception as e:
             logger.warning("Failed to delete memory %r during clear: %s", mem.key, e)
@@ -2721,7 +2932,9 @@ def main():
     # proxy opt into a wider range with CAO_FORWARDED_ALLOW_IPS. A
     # literal ``*`` is honoured and disables the check (matches the
     # existing CAO_WS_ALLOWED_CLIENTS="*" semantics).
-    forwarded_ips = "*" if "*" in TRUSTED_FORWARDER_IPS else ",".join(TRUSTED_FORWARDER_IPS)
+    forwarded_ips = (
+        "*" if "*" in TRUSTED_FORWARDER_IPS else ",".join(TRUSTED_FORWARDER_IPS)
+    )
     uvicorn.run(
         app,
         host=host,

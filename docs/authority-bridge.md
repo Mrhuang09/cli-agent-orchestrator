@@ -76,18 +76,27 @@ Messages use stable authority roles rather than transient terminal IDs:
 # Run inside the project-director terminal (sender inferred from CAO_TERMINAL_ID)
 cao authority send --to technical-director "Review the current contract"
 
-# Run from an ordinary shell (sender must be explicit)
+# Run from an ordinary shell (sender must be explicit; request above returned ID 41)
 cao authority send \
   --project-root /path/to/project \
   --from technical-director \
   --to project-director \
+  --reply-to 41 \
   "Review completed; evidence follows"
 ```
 
+Authority messages require a correlated callback by default. The request command prints its
+message ID; the receiver returns that ID with `--reply-to`. Replies never recursively require a
+second callback. Use `--no-require-callback` only for an intentional one-way notice.
+
 The command reports durable inbox acceptance as `pending`. That is not task completion.
-`--wait-delivered` waits only until CAO delivers the message to the receiving terminal; the
-receiver must still return a correlated acknowledgement for a completed handoff. MCP messaging
-is optional and is not required for authority bridge correctness.
+`--wait-delivered` waits only until CAO delivers the message to the receiving terminal. After the
+receiver actually enters processing and then becomes completed/idle, the local watchdog waits
+three minutes for `--reply-to`, sends one reminder to the receiver, and alerts the original sender
+at ten minutes if the reply remains missing. These timers use the local SQLite state machine and
+do not call either model or consume model tokens. Silence is reported only as a missing callback,
+never as inferred task failure. MCP messaging is optional and is not required for authority bridge
+correctness.
 
 For automation or diagnostics:
 
@@ -95,6 +104,10 @@ For automation or diagnostics:
 cao authority start --no-attach
 cao authority status --json
 ```
+
+Text status shows awaiting/reminded/escalated counts. JSON status also includes unresolved request
+IDs and reminder/escalation deadlines. Replacing or stopping an authority generation cancels its
+unresolved callback rows so reminders cannot cross sessions.
 
 `start` refuses to proceed when it detects any of the following:
 

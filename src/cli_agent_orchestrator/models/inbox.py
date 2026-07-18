@@ -22,6 +22,19 @@ class MessageStatus(str, Enum):
     FAILED = "failed"
 
 
+class AuthorityCallbackState(str, Enum):
+    """Durable lifecycle for an authority task that requires a correlated reply."""
+
+    WAITING_DELIVERY = "waiting_delivery"
+    WAITING_START = "waiting_start"
+    RUNNING = "running"
+    WAITING_REPLY = "waiting_reply"
+    REMINDED = "reminded"
+    ESCALATED = "escalated"
+    ACKNOWLEDGED = "acknowledged"
+    CANCELLED = "cancelled"
+
+
 class InboxMessage(BaseModel):
     """Inbox message model."""
 
@@ -31,3 +44,21 @@ class InboxMessage(BaseModel):
     message: str = Field(..., description="Message content")
     status: MessageStatus = Field(..., description="Message status")
     created_at: datetime = Field(..., description="Creation timestamp")
+
+
+class AuthorityCallback(BaseModel):
+    """Persisted callback correlation and watchdog state."""
+
+    request_message_id: int
+    generation_id: str
+    sender_id: str
+    receiver_id: str
+    state: AuthorityCallbackState
+    created_at: datetime
+    delivered_at: datetime | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    reminded_at: datetime | None = None
+    escalated_at: datetime | None = None
+    acknowledged_at: datetime | None = None
+    reply_message_id: int | None = None

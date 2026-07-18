@@ -63,7 +63,9 @@ def test_authority_start_delegates_to_runtime(tmp_path: Path):
     project.mkdir()
     runner = CliRunner()
 
-    with patch("cli_agent_orchestrator.cli.commands.authority.AuthorityRuntime") as runtime_cls:
+    with patch(
+        "cli_agent_orchestrator.cli.commands.authority.AuthorityRuntime"
+    ) as runtime_cls:
         result = runner.invoke(
             authority,
             ["start", "--project-root", str(project), "--no-attach"],
@@ -79,7 +81,9 @@ def test_authority_send_requires_roles_and_reports_queue_acceptance(tmp_path: Pa
     project.mkdir()
     runner = CliRunner()
 
-    with patch("cli_agent_orchestrator.cli.commands.authority.AuthorityRuntime") as runtime_cls:
+    with patch(
+        "cli_agent_orchestrator.cli.commands.authority.AuthorityRuntime"
+    ) as runtime_cls:
         runtime_cls.return_value.send.return_value = {
             "message_id": 41,
             "queue_status": "pending",
@@ -105,5 +109,49 @@ def test_authority_send_requires_roles_and_reports_queue_acceptance(tmp_path: Pa
         from_role="project-director",
         message="review S1",
         wait_delivered=False,
+        require_callback=True,
+        reply_to=None,
+        timeout=30.0,
+    )
+
+
+def test_authority_send_reply_to_disables_recursive_callback(tmp_path: Path):
+    project = tmp_path / "project"
+    project.mkdir()
+    runner = CliRunner()
+
+    with patch(
+        "cli_agent_orchestrator.cli.commands.authority.AuthorityRuntime"
+    ) as runtime_cls:
+        runtime_cls.return_value.send.return_value = {
+            "message_id": 42,
+            "queue_status": "pending",
+            "reply_to": 41,
+        }
+        result = runner.invoke(
+            authority,
+            [
+                "send",
+                "done",
+                "--project-root",
+                str(project),
+                "--from",
+                "technical-director",
+                "--to",
+                "project-director",
+                "--reply-to",
+                "41",
+            ],
+        )
+
+    assert result.exit_code == 0, result.output
+    assert "acknowledged request 41" in result.output
+    runtime_cls.return_value.send.assert_called_once_with(
+        to_role="project-director",
+        from_role="technical-director",
+        message="done",
+        wait_delivered=False,
+        require_callback=True,
+        reply_to=41,
         timeout=30.0,
     )

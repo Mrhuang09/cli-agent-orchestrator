@@ -108,7 +108,9 @@ def discover_command(project_root: Path, as_json: bool) -> None:
 @click.option("--claude-session-id", help="Existing Claude conversation UUID.")
 @click.option("--codex-model", help="Optional Codex model override.")
 @click.option("--claude-model", help="Optional Claude model override.")
-@click.option("--force", is_flag=True, help="Replace an existing private configuration.")
+@click.option(
+    "--force", is_flag=True, help="Replace an existing private configuration."
+)
 def init_command(
     project_root: Path,
     codex_session_id: str | None,
@@ -122,11 +124,14 @@ def init_command(
     if not codex_session_id or not claude_session_id:
         if not click.get_text_stream("stdin").isatty():
             raise click.ClickException(
-                "non-interactive init requires both --codex-session-id and " "--claude-session-id"
+                "non-interactive init requires both --codex-session-id and "
+                "--claude-session-id"
             )
         candidates = discover_sessions(root)
         codex_session_id = codex_session_id or _choose_candidate("codex", candidates)
-        claude_session_id = claude_session_id or _choose_candidate("claude_code", candidates)
+        claude_session_id = claude_session_id or _choose_candidate(
+            "claude_code", candidates
+        )
     try:
         config = initialize_authority(
             root,
@@ -162,7 +167,13 @@ def start_command(project_root: Path, attach: bool) -> None:
     root = _root(str(project_root))
     try:
         terminals = AuthorityRuntime(root).start(attach=attach)
-    except (ValueError, FileNotFoundError, RuntimeError, OSError, requests.RequestException) as exc:
+    except (
+        ValueError,
+        FileNotFoundError,
+        RuntimeError,
+        OSError,
+        requests.RequestException,
+    ) as exc:
         raise _handle_error(exc) from exc
     click.echo(f"Authority bridge started with {len(terminals)} terminals")
 
@@ -180,19 +191,41 @@ def status_command(project_root: Path, as_json: bool) -> None:
     root = _root(str(project_root))
     try:
         items = AuthorityRuntime(root).status()
-    except (ValueError, FileNotFoundError, RuntimeError, OSError, requests.RequestException) as exc:
+    except (
+        ValueError,
+        FileNotFoundError,
+        RuntimeError,
+        OSError,
+        requests.RequestException,
+    ) as exc:
         raise _handle_error(exc) from exc
     if as_json:
         click.echo(json.dumps(items, indent=2))
         return
-    click.echo(f"{'ID':<12} {'PROFILE':<24} {'PROVIDER':<14} {'STATUS':<14} PENDING")
-    click.echo("-" * 80)
+    click.echo(
+        f"{'ID':<12} {'PROFILE':<24} {'PROVIDER':<14} "
+        f"{'STATUS':<14} {'PENDING':<8} {'AWAIT':<6} {'REMIND':<7} ESCALATE"
+    )
+    click.echo("-" * 92)
     for item in items:
+        callback_states = item.get("callback_states", {})
+        awaiting = sum(
+            callback_states.get(state, 0)
+            for state in (
+                "waiting_delivery",
+                "waiting_start",
+                "running",
+                "waiting_reply",
+            )
+        )
         click.echo(
             f"{str(item.get('id', 'N/A')):<12} "
             f"{str(item.get('agent_profile', 'N/A')):<24} "
             f"{str(item.get('provider', 'N/A')):<14} "
-            f"{str(item.get('status', 'N/A')):<14} {item.get('pending', 0)}"
+            f"{str(item.get('status', 'N/A')):<14} "
+            f"{item.get('pending', 0):<8} {awaiting:<6} "
+            f"{callback_states.get('reminded', 0):<7} "
+            f"{callback_states.get('escalated', 0)}"
         )
 
 
@@ -208,7 +241,13 @@ def attach_command(project_root: Path) -> None:
     root = _root(str(project_root))
     try:
         AuthorityRuntime(root).attach()
-    except (ValueError, FileNotFoundError, RuntimeError, OSError, requests.RequestException) as exc:
+    except (
+        ValueError,
+        FileNotFoundError,
+        RuntimeError,
+        OSError,
+        requests.RequestException,
+    ) as exc:
         raise _handle_error(exc) from exc
 
 
@@ -238,7 +277,20 @@ def attach_command(project_root: Path) -> None:
     is_flag=True,
     help="Wait for inbox delivery, not for task completion or a reply.",
 )
-@click.option("--timeout", default=30.0, show_default=True, type=click.FloatRange(min=0.1))
+@click.option(
+    "--require-callback/--no-require-callback",
+    default=True,
+    show_default=True,
+    help="Track this authority task until a correlated reply is received.",
+)
+@click.option(
+    "--reply-to",
+    type=click.IntRange(min=1),
+    help="Acknowledge an authority request by its message ID.",
+)
+@click.option(
+    "--timeout", default=30.0, show_default=True, type=click.FloatRange(min=0.1)
+)
 @click.option("--json", "as_json", is_flag=True, help="Output machine-readable JSON.")
 def send_command(
     message: str,
@@ -246,6 +298,8 @@ def send_command(
     from_role: str | None,
     project_root: Path,
     wait_delivered: bool,
+    require_callback: bool,
+    reply_to: int | None,
     timeout: float,
     as_json: bool,
 ) -> None:
@@ -257,6 +311,8 @@ def send_command(
             from_role=from_role,
             message=message,
             wait_delivered=wait_delivered,
+            require_callback=require_callback,
+            reply_to=reply_to,
             timeout=timeout,
         )
     except (
@@ -271,9 +327,14 @@ def send_command(
     if as_json:
         click.echo(json.dumps(result, indent=2))
         return
+    suffix = ""
+    if result.get("reply_to") is not None:
+        suffix = f"; acknowledged request {result['reply_to']}"
+    elif result.get("callback_request_id") is not None:
+        suffix = f"; callback={result.get('callback_state')}"
     click.echo(
         f"Authority message {result['message_id']} accepted: "
-        f"{result.get('queue_status', 'pending')}"
+        f"{result.get('queue_status', 'pending')}{suffix}"
     )
 
 
@@ -289,6 +350,14 @@ def stop_command(project_root: Path) -> None:
     root = _root(str(project_root))
     try:
         changed = AuthorityRuntime(root).stop()
-    except (ValueError, FileNotFoundError, RuntimeError, OSError, requests.RequestException) as exc:
+    except (
+        ValueError,
+        FileNotFoundError,
+        RuntimeError,
+        OSError,
+        requests.RequestException,
+    ) as exc:
         raise _handle_error(exc) from exc
-    click.echo("Authority bridge stopped" if changed else "Authority bridge was not running")
+    click.echo(
+        "Authority bridge stopped" if changed else "Authority bridge was not running"
+    )

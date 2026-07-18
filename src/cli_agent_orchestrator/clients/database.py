@@ -21,7 +21,12 @@ from sqlalchemy.orm import DeclarativeBase, declarative_base, sessionmaker
 
 from cli_agent_orchestrator.constants import DATABASE_URL, DB_DIR, DEFAULT_PROVIDER
 from cli_agent_orchestrator.models.flow import Flow
-from cli_agent_orchestrator.models.inbox import InboxMessage, MessageStatus
+from cli_agent_orchestrator.models.inbox import (
+    AuthorityCallback,
+    AuthorityCallbackState,
+    InboxMessage,
+    MessageStatus,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -39,8 +44,12 @@ class TerminalModel(Base):
     provider = Column(String, nullable=False)  # "kiro_cli", "claude_code"
     agent_profile = Column(String)  # "developer", "reviewer" (optional)
     allowed_tools = Column(String, nullable=True)  # JSON-encoded list of CAO tool names
-    shell_command = Column(String, nullable=True)  # shell process name captured before kiro launch
-    caller_id = Column(String, nullable=True)  # terminal that created this one (callback target)
+    shell_command = Column(
+        String, nullable=True
+    )  # shell process name captured before kiro launch
+    caller_id = Column(
+        String, nullable=True
+    )  # terminal that created this one (callback target)
     last_active = Column(DateTime, default=datetime.now)
 
 
@@ -55,6 +64,26 @@ class InboxModel(Base):
     message = Column(String, nullable=False)
     status = Column(String, nullable=False)  # MessageStatus enum value
     created_at = Column(DateTime, default=datetime.now)
+
+
+class AuthorityCallbackModel(Base):
+    """Durable reply expectation for an authority inbox message."""
+
+    __tablename__ = "authority_callbacks"
+
+    request_message_id = Column(Integer, primary_key=True)
+    generation_id = Column(String, nullable=False, index=True)
+    sender_id = Column(String, nullable=False, index=True)
+    receiver_id = Column(String, nullable=False, index=True)
+    state = Column(String, nullable=False, index=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.now)
+    delivered_at = Column(DateTime, nullable=True)
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    reminded_at = Column(DateTime, nullable=True)
+    escalated_at = Column(DateTime, nullable=True)
+    acknowledged_at = Column(DateTime, nullable=True)
+    reply_message_id = Column(Integer, nullable=True, unique=True)
 
 
 def _utcnow() -> datetime:
@@ -224,7 +253,8 @@ def _migrate_project_aliases_schema() -> None:
     try:
         with sqlite3.connect(str(DATABASE_FILE)) as conn:
             row = conn.execute(
-                "SELECT name FROM sqlite_master " "WHERE type='table' AND name='project_aliases'"
+                "SELECT name FROM sqlite_master "
+                "WHERE type='table' AND name='project_aliases'"
             ).fetchone()
             if row is None:
                 return  # table doesn't exist yet — create_all builds it fresh
@@ -236,7 +266,9 @@ def _migrate_project_aliases_schema() -> None:
             if pk_cols != {"alias"}:
                 conn.execute("DROP TABLE project_aliases")
                 conn.commit()
-                logger.info("Migration: rebuilt project_aliases with alias-only primary key")
+                logger.info(
+                    "Migration: rebuilt project_aliases with alias-only primary key"
+                )
     except Exception as e:
         logger.debug(f"project_aliases migration skipped: {e}")
 
@@ -284,8 +316,12 @@ def _migrate_add_access_count() -> None:
                 )
                 logger.info("Migration: added access_count column to memory_metadata")
             if "last_accessed_at" not in columns:
-                conn.execute("ALTER TABLE memory_metadata ADD COLUMN last_accessed_at DATETIME")
-                logger.info("Migration: added last_accessed_at column to memory_metadata")
+                conn.execute(
+                    "ALTER TABLE memory_metadata ADD COLUMN last_accessed_at DATETIME"
+                )
+                logger.info(
+                    "Migration: added last_accessed_at column to memory_metadata"
+                )
     except Exception as e:
         logger.debug(f"Migration check for access_count failed: {e}")
 
@@ -306,8 +342,12 @@ def _migrate_add_last_compiled_at() -> None:
             cursor = conn.execute("PRAGMA table_info(memory_metadata)")
             columns = {row[1] for row in cursor.fetchall()}
             if "last_compiled_at" not in columns:
-                conn.execute("ALTER TABLE memory_metadata ADD COLUMN last_compiled_at DATETIME")
-                logger.info("Migration: added last_compiled_at column to memory_metadata")
+                conn.execute(
+                    "ALTER TABLE memory_metadata ADD COLUMN last_compiled_at DATETIME"
+                )
+                logger.info(
+                    "Migration: added last_compiled_at column to memory_metadata"
+                )
     except Exception as e:
         logger.debug(f"Migration check for last_compiled_at failed: {e}")
 
@@ -409,7 +449,9 @@ def _migrate_workflow_run() -> None:
                 "finished_at TEXT"
                 ")"
             )
-            columns = {row[1] for row in conn.execute("PRAGMA table_info(workflow_run)")}
+            columns = {
+                row[1] for row in conn.execute("PRAGMA table_info(workflow_run)")
+            }
             if "tier" not in columns:
                 conn.execute(
                     "ALTER TABLE workflow_run ADD COLUMN tier TEXT NOT NULL DEFAULT 'yaml'"
@@ -461,12 +503,16 @@ def _migrate_workflow_run_step() -> None:
                 "PRIMARY KEY (run_id, step_id)"
                 ")"
             )
-            columns = {row[1] for row in conn.execute("PRAGMA table_info(workflow_run_step)")}
+            columns = {
+                row[1] for row in conn.execute("PRAGMA table_info(workflow_run_step)")
+            }
             if "call_fingerprint" not in columns:
                 conn.execute(
                     "ALTER TABLE workflow_run_step ADD COLUMN call_fingerprint TEXT DEFAULT NULL"
                 )
-                logger.info("Migration: added call_fingerprint column to workflow_run_step")
+                logger.info(
+                    "Migration: added call_fingerprint column to workflow_run_step"
+                )
     except Exception as e:  # noqa: BLE001 — derived/recoverable; logged at debug (B4-RD-4)
         logger.debug(f"workflow_run_step migration skipped: {e}")
 
@@ -541,14 +587,20 @@ def get_terminal_metadata(terminal_id: str) -> Optional[Dict[str, Any]]:
     import json as _json
 
     with SessionLocal() as db:
-        terminal = db.query(TerminalModel).filter(TerminalModel.id == terminal_id).first()
+        terminal = (
+            db.query(TerminalModel).filter(TerminalModel.id == terminal_id).first()
+        )
         if not terminal:
-            logger.warning(f"Terminal metadata not found for terminal_id: {terminal_id}")
+            logger.warning(
+                f"Terminal metadata not found for terminal_id: {terminal_id}"
+            )
             return None
         logger.debug(
             f"Retrieved terminal metadata for {terminal_id}: provider={terminal.provider}, session={terminal.tmux_session}"
         )
-        allowed_tools = _json.loads(terminal.allowed_tools) if terminal.allowed_tools else None
+        allowed_tools = (
+            _json.loads(terminal.allowed_tools) if terminal.allowed_tools else None
+        )
         return {
             "id": terminal.id,
             "tmux_session": terminal.tmux_session,
@@ -565,7 +617,11 @@ def get_terminal_metadata(terminal_id: str) -> Optional[Dict[str, Any]]:
 def list_terminals_by_session(tmux_session: str) -> List[Dict[str, Any]]:
     """List all terminals in a tmux session."""
     with SessionLocal() as db:
-        terminals = db.query(TerminalModel).filter(TerminalModel.tmux_session == tmux_session).all()
+        terminals = (
+            db.query(TerminalModel)
+            .filter(TerminalModel.tmux_session == tmux_session)
+            .all()
+        )
         return [
             {
                 "id": t.id,
@@ -582,7 +638,9 @@ def list_terminals_by_session(tmux_session: str) -> List[Dict[str, Any]]:
 def update_last_active(terminal_id: str) -> bool:
     """Update last active timestamp."""
     with SessionLocal() as db:
-        terminal = db.query(TerminalModel).filter(TerminalModel.id == terminal_id).first()
+        terminal = (
+            db.query(TerminalModel).filter(TerminalModel.id == terminal_id).first()
+        )
         if terminal:
             terminal.last_active = datetime.now()
             db.commit()
@@ -593,7 +651,9 @@ def update_last_active(terminal_id: str) -> bool:
 def update_terminal_shell_command(terminal_id: str, shell_command: str) -> bool:
     """Update the shell_command baseline for a terminal."""
     with SessionLocal() as db:
-        terminal = db.query(TerminalModel).filter(TerminalModel.id == terminal_id).first()
+        terminal = (
+            db.query(TerminalModel).filter(TerminalModel.id == terminal_id).first()
+        )
         if terminal:
             terminal.shell_command = shell_command
             db.commit()
@@ -667,7 +727,9 @@ def list_pending_receiver_ids_older_than(min_age_seconds: int) -> List[str]:
 def delete_terminal(terminal_id: str) -> bool:
     """Delete terminal metadata."""
     with SessionLocal() as db:
-        deleted = db.query(TerminalModel).filter(TerminalModel.id == terminal_id).delete()
+        deleted = (
+            db.query(TerminalModel).filter(TerminalModel.id == terminal_id).delete()
+        )
         db.commit()
         return deleted > 0
 
@@ -676,13 +738,17 @@ def delete_terminals_by_session(tmux_session: str) -> int:
     """Delete all terminals in a session."""
     with SessionLocal() as db:
         deleted = (
-            db.query(TerminalModel).filter(TerminalModel.tmux_session == tmux_session).delete()
+            db.query(TerminalModel)
+            .filter(TerminalModel.tmux_session == tmux_session)
+            .delete()
         )
         db.commit()
         return deleted
 
 
-def create_inbox_message(sender_id: str, receiver_id: str, message: str) -> InboxMessage:
+def create_inbox_message(
+    sender_id: str, receiver_id: str, message: str
+) -> InboxMessage:
     """Create inbox message with status=MessageStatus.PENDING.
 
     Raises:
@@ -708,6 +774,331 @@ def create_inbox_message(sender_id: str, receiver_id: str, message: str) -> Inbo
             status=MessageStatus(inbox_msg.status),
             created_at=inbox_msg.created_at,
         )
+
+
+def _authority_callback_from_row(row: AuthorityCallbackModel) -> AuthorityCallback:
+    return AuthorityCallback(
+        request_message_id=row.request_message_id,
+        generation_id=row.generation_id,
+        sender_id=row.sender_id,
+        receiver_id=row.receiver_id,
+        state=AuthorityCallbackState(row.state),
+        created_at=row.created_at,
+        delivered_at=row.delivered_at,
+        started_at=row.started_at,
+        completed_at=row.completed_at,
+        reminded_at=row.reminded_at,
+        escalated_at=row.escalated_at,
+        acknowledged_at=row.acknowledged_at,
+        reply_message_id=row.reply_message_id,
+    )
+
+
+def create_authority_message(
+    sender_id: str,
+    receiver_id: str,
+    message: str,
+    generation_id: str,
+    *,
+    require_callback: bool = True,
+    reply_to: int | None = None,
+) -> tuple[InboxMessage, AuthorityCallback | None]:
+    """Atomically create an authority request or acknowledge it with a reply."""
+    if not generation_id:
+        raise ValueError("authority generation_id must not be empty")
+    now = datetime.now()
+    with SessionLocal() as db:
+        if not db.query(TerminalModel).filter(TerminalModel.id == receiver_id).first():
+            raise ValueError(f"Terminal '{receiver_id}' not found")
+
+        callback: AuthorityCallbackModel | None = None
+        if reply_to is not None:
+            callback = (
+                db.query(AuthorityCallbackModel)
+                .filter(AuthorityCallbackModel.request_message_id == reply_to)
+                .first()
+            )
+            if callback is None:
+                raise ValueError(f"Authority callback for message {reply_to} not found")
+            if callback.generation_id != generation_id:
+                raise ValueError("authority reply belongs to a different generation")
+            if callback.state in {
+                AuthorityCallbackState.ACKNOWLEDGED.value,
+                AuthorityCallbackState.CANCELLED.value,
+            }:
+                raise ValueError(f"Authority callback {reply_to} is already closed")
+            if callback.receiver_id != sender_id or callback.sender_id != receiver_id:
+                raise ValueError(
+                    "authority reply roles do not reverse the original request"
+                )
+
+        inbox_msg = InboxModel(
+            sender_id=sender_id,
+            receiver_id=receiver_id,
+            message=message,
+            status=MessageStatus.PENDING.value,
+            created_at=now,
+        )
+        db.add(inbox_msg)
+        db.flush()
+
+        if callback is not None:
+            claimed = (
+                db.query(AuthorityCallbackModel)
+                .filter(
+                    AuthorityCallbackModel.request_message_id == reply_to,
+                    AuthorityCallbackModel.state.notin_(
+                        {
+                            AuthorityCallbackState.ACKNOWLEDGED.value,
+                            AuthorityCallbackState.CANCELLED.value,
+                        }
+                    ),
+                )
+                .update(
+                    {
+                        AuthorityCallbackModel.state: AuthorityCallbackState.ACKNOWLEDGED.value,
+                        AuthorityCallbackModel.acknowledged_at: now,
+                        AuthorityCallbackModel.reply_message_id: inbox_msg.id,
+                    },
+                    synchronize_session=False,
+                )
+            )
+            if claimed != 1:
+                db.rollback()
+                raise ValueError(f"Authority callback {reply_to} is already closed")
+            db.expire_all()
+            callback = (
+                db.query(AuthorityCallbackModel)
+                .filter(AuthorityCallbackModel.request_message_id == reply_to)
+                .one()
+            )
+        elif require_callback:
+            callback = AuthorityCallbackModel(
+                request_message_id=inbox_msg.id,
+                generation_id=generation_id,
+                sender_id=sender_id,
+                receiver_id=receiver_id,
+                state=AuthorityCallbackState.WAITING_DELIVERY.value,
+                created_at=now,
+            )
+            db.add(callback)
+
+        db.commit()
+        db.refresh(inbox_msg)
+        if callback is not None:
+            db.refresh(callback)
+        result = InboxMessage(
+            id=inbox_msg.id,
+            sender_id=inbox_msg.sender_id,
+            receiver_id=inbox_msg.receiver_id,
+            message=inbox_msg.message,
+            status=MessageStatus(inbox_msg.status),
+            created_at=inbox_msg.created_at,
+        )
+        return result, _authority_callback_from_row(
+            callback
+        ) if callback is not None else None
+
+
+def get_authority_callback(request_message_id: int) -> AuthorityCallback | None:
+    """Return callback state for a request message."""
+    with SessionLocal() as db:
+        row = (
+            db.query(AuthorityCallbackModel)
+            .filter(AuthorityCallbackModel.request_message_id == request_message_id)
+            .first()
+        )
+        return _authority_callback_from_row(row) if row is not None else None
+
+
+def list_authority_callbacks(
+    *, generation_id: str | None = None, terminal_id: str | None = None
+) -> list[AuthorityCallback]:
+    """List callbacks for status and diagnostics, newest first."""
+    with SessionLocal() as db:
+        query = db.query(AuthorityCallbackModel)
+        if generation_id is not None:
+            query = query.filter(AuthorityCallbackModel.generation_id == generation_id)
+        if terminal_id is not None:
+            query = query.filter(
+                (AuthorityCallbackModel.sender_id == terminal_id)
+                | (AuthorityCallbackModel.receiver_id == terminal_id)
+            )
+        rows = query.order_by(AuthorityCallbackModel.created_at.desc()).all()
+        return [_authority_callback_from_row(row) for row in rows]
+
+
+def cancel_authority_callbacks_except(generation_id: str) -> int:
+    """Cancel unresolved callbacks left by replaced authority generations."""
+    closed = {
+        AuthorityCallbackState.ACKNOWLEDGED.value,
+        AuthorityCallbackState.CANCELLED.value,
+    }
+    with SessionLocal() as db:
+        rows = (
+            db.query(AuthorityCallbackModel)
+            .filter(
+                AuthorityCallbackModel.generation_id != generation_id,
+                ~AuthorityCallbackModel.state.in_(closed),
+            )
+            .all()
+        )
+        for row in rows:
+            row.state = AuthorityCallbackState.CANCELLED.value
+        db.commit()
+        return len(rows)
+
+
+def cancel_authority_callbacks_for_generation(generation_id: str) -> int:
+    """Cancel unresolved callbacks when an authority generation stops."""
+    closed = {
+        AuthorityCallbackState.ACKNOWLEDGED.value,
+        AuthorityCallbackState.CANCELLED.value,
+    }
+    with SessionLocal() as db:
+        rows = (
+            db.query(AuthorityCallbackModel)
+            .filter(
+                AuthorityCallbackModel.generation_id == generation_id,
+                ~AuthorityCallbackModel.state.in_(closed),
+            )
+            .all()
+        )
+        for row in rows:
+            row.state = AuthorityCallbackState.CANCELLED.value
+        db.commit()
+        return len(rows)
+
+
+def record_authority_terminal_status(terminal_id: str, status: str) -> int:
+    """Advance callback state from authoritative terminal status events."""
+    now = datetime.now()
+    changed = 0
+    with SessionLocal() as db:
+        if status == "processing":
+            rows = (
+                db.query(AuthorityCallbackModel)
+                .filter(
+                    AuthorityCallbackModel.receiver_id == terminal_id,
+                    AuthorityCallbackModel.state
+                    == AuthorityCallbackState.WAITING_START.value,
+                )
+                .all()
+            )
+            for row in rows:
+                row.state = AuthorityCallbackState.RUNNING.value
+                row.started_at = now
+                changed += 1
+        elif status in {"idle", "completed"}:
+            rows = (
+                db.query(AuthorityCallbackModel)
+                .filter(
+                    AuthorityCallbackModel.receiver_id == terminal_id,
+                    AuthorityCallbackModel.state
+                    == AuthorityCallbackState.RUNNING.value,
+                )
+                .all()
+            )
+            for row in rows:
+                row.state = AuthorityCallbackState.WAITING_REPLY.value
+                row.completed_at = now
+                changed += 1
+        if changed:
+            db.commit()
+    return changed
+
+
+def enqueue_due_authority_callback_notices(
+    *, now: datetime, reminder_seconds: int, escalation_seconds: int
+) -> list[str]:
+    """Atomically claim due callbacks and enqueue one reminder/escalation each."""
+    receivers: list[str] = []
+    reminder_cutoff = now - timedelta(seconds=reminder_seconds)
+    escalation_cutoff = now - timedelta(seconds=escalation_seconds)
+    with SessionLocal() as db:
+        due_reminders = (
+            db.query(AuthorityCallbackModel)
+            .filter(
+                AuthorityCallbackModel.state
+                == AuthorityCallbackState.WAITING_REPLY.value,
+                AuthorityCallbackModel.completed_at <= reminder_cutoff,
+            )
+            .all()
+        )
+        for row in due_reminders:
+            claimed = (
+                db.query(AuthorityCallbackModel)
+                .filter(
+                    AuthorityCallbackModel.request_message_id == row.request_message_id,
+                    AuthorityCallbackModel.state
+                    == AuthorityCallbackState.WAITING_REPLY.value,
+                )
+                .update(
+                    {
+                        AuthorityCallbackModel.state: AuthorityCallbackState.REMINDED.value,
+                        AuthorityCallbackModel.reminded_at: now,
+                    },
+                    synchronize_session=False,
+                )
+            )
+            if claimed != 1:
+                continue
+            db.add(
+                InboxModel(
+                    sender_id=row.sender_id,
+                    receiver_id=row.receiver_id,
+                    message=(
+                        f"[CAO CALLBACK REMINDER] Authority message {row.request_message_id} "
+                        "is complete but has no correlated reply. Reply with: "
+                        f"cao authority send --reply-to {row.request_message_id} ..."
+                    ),
+                    status=MessageStatus.PENDING.value,
+                    created_at=now,
+                )
+            )
+            receivers.append(row.receiver_id)
+
+        due_escalations = (
+            db.query(AuthorityCallbackModel)
+            .filter(
+                AuthorityCallbackModel.state == AuthorityCallbackState.REMINDED.value,
+                AuthorityCallbackModel.completed_at <= escalation_cutoff,
+            )
+            .all()
+        )
+        for row in due_escalations:
+            claimed = (
+                db.query(AuthorityCallbackModel)
+                .filter(
+                    AuthorityCallbackModel.request_message_id == row.request_message_id,
+                    AuthorityCallbackModel.state
+                    == AuthorityCallbackState.REMINDED.value,
+                )
+                .update(
+                    {
+                        AuthorityCallbackModel.state: AuthorityCallbackState.ESCALATED.value,
+                        AuthorityCallbackModel.escalated_at: now,
+                    },
+                    synchronize_session=False,
+                )
+            )
+            if claimed != 1:
+                continue
+            db.add(
+                InboxModel(
+                    sender_id=row.receiver_id,
+                    receiver_id=row.sender_id,
+                    message=(
+                        f"[CAO CALLBACK ALERT] Authority message {row.request_message_id} "
+                        f"to {row.receiver_id} still has no correlated reply after reminder."
+                    ),
+                    status=MessageStatus.PENDING.value,
+                    created_at=now,
+                )
+            )
+            receivers.append(row.sender_id)
+        db.commit()
+    return list(dict.fromkeys(receivers))
 
 
 def get_pending_messages(receiver_id: str, limit: int = 1) -> List[InboxMessage]:
@@ -764,7 +1155,11 @@ def record_project_alias(project_id: str, alias: str, kind: str) -> None:
             # mapped — e.g. recorded against an override id, then re-resolved
             # via git remote — repoint it to the current canonical project_id
             # so reverse lookups stay deterministic instead of duplicating.
-            existing = db.query(ProjectAliasModel).filter(ProjectAliasModel.alias == alias).first()
+            existing = (
+                db.query(ProjectAliasModel)
+                .filter(ProjectAliasModel.alias == alias)
+                .first()
+            )
             if existing is None:
                 db.add(ProjectAliasModel(project_id=project_id, alias=alias, kind=kind))
                 db.commit()
@@ -782,7 +1177,11 @@ def get_project_id_by_alias(alias: str) -> Optional[str]:
         return None
     try:
         with SessionLocal() as db:
-            row = db.query(ProjectAliasModel).filter(ProjectAliasModel.alias == alias).first()
+            row = (
+                db.query(ProjectAliasModel)
+                .filter(ProjectAliasModel.alias == alias)
+                .first()
+            )
             return cast(Optional[str], row.project_id) if row else None
     except Exception as e:
         logger.debug(f"get_project_id_by_alias failed (non-fatal): {e}")
@@ -796,9 +1195,14 @@ def list_aliases_for_project(project_id: str) -> List[Dict[str, Any]]:
     try:
         with SessionLocal() as db:
             rows = (
-                db.query(ProjectAliasModel).filter(ProjectAliasModel.project_id == project_id).all()
+                db.query(ProjectAliasModel)
+                .filter(ProjectAliasModel.project_id == project_id)
+                .all()
             )
-            return [{"project_id": r.project_id, "alias": r.alias, "kind": r.kind} for r in rows]
+            return [
+                {"project_id": r.project_id, "alias": r.alias, "kind": r.kind}
+                for r in rows
+            ]
     except Exception as e:
         logger.debug(f"list_aliases_for_project failed (non-fatal): {e}")
         return []
@@ -810,6 +1214,23 @@ def update_message_status(message_id: int, status: MessageStatus) -> bool:
         message = db.query(InboxModel).filter(InboxModel.id == message_id).first()
         if message:
             message.status = status.value
+            callback = (
+                db.query(AuthorityCallbackModel)
+                .filter(AuthorityCallbackModel.request_message_id == message_id)
+                .first()
+            )
+            if callback is not None:
+                if (
+                    status == MessageStatus.DELIVERED
+                    and callback.state == AuthorityCallbackState.WAITING_DELIVERY.value
+                ):
+                    callback.state = AuthorityCallbackState.WAITING_START.value
+                    callback.delivered_at = datetime.now()
+                elif status == MessageStatus.FAILED and callback.state not in {
+                    AuthorityCallbackState.ACKNOWLEDGED.value,
+                    AuthorityCallbackState.CANCELLED.value,
+                }:
+                    callback.state = AuthorityCallbackState.CANCELLED.value
             db.commit()
             return True
         return False
@@ -908,7 +1329,9 @@ def update_flow_run_times(name: str, last_run: datetime, next_run: datetime) -> 
         return False
 
 
-def update_flow_enabled(name: str, enabled: bool, next_run: Optional[datetime] = None) -> bool:
+def update_flow_enabled(
+    name: str, enabled: bool, next_run: Optional[datetime] = None
+) -> bool:
     """Update flow enabled status and optionally next_run."""
     with SessionLocal() as db:
         flow = db.query(FlowModel).filter(FlowModel.name == name).first()
@@ -934,7 +1357,9 @@ def get_flows_to_run() -> List[Flow]:
     with SessionLocal() as db:
         now = datetime.now()
         flows = (
-            db.query(FlowModel).filter(FlowModel.enabled == True, FlowModel.next_run <= now).all()
+            db.query(FlowModel)
+            .filter(FlowModel.enabled == True, FlowModel.next_run <= now)
+            .all()
         )
         return [
             Flow(

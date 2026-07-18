@@ -122,7 +122,9 @@ PYTE_QUIESCENCE_DELAY_S = 0.2
 # PROCESSING state for providers that declare
 # accepts_input_while_processing=True. Eliminates latency between agent turns
 # for capable providers (e.g., Claude Code).
-EAGER_INBOX_DELIVERY = os.environ.get("CAO_EAGER_INBOX_DELIVERY", "false").lower() == "true"
+EAGER_INBOX_DELIVERY = (
+    os.environ.get("CAO_EAGER_INBOX_DELIVERY", "false").lower() == "true"
+)
 
 # Poll interval (seconds) for the OpenCode inbox poller. OpenCode buffers input
 # and its pipe-pane output can stop changing once the TUI settles, so the
@@ -146,6 +148,15 @@ INBOX_POLLING_INTERVAL = 5
 # The interval is deliberately much larger than INBOX_POLLING_INTERVAL: this is
 # a safety net, not a primary delivery path, so it trades latency for low load.
 INBOX_RECONCILE_INTERVAL = 30  # seconds between reconciliation sweeps
+AUTHORITY_CALLBACK_RECONCILE_INTERVAL = _env_int(
+    "CAO_AUTHORITY_CALLBACK_RECONCILE_INTERVAL", 30
+)
+AUTHORITY_CALLBACK_REMINDER_SECONDS = _env_int(
+    "CAO_AUTHORITY_CALLBACK_REMINDER_SECONDS", 180
+)
+AUTHORITY_CALLBACK_ESCALATION_SECONDS = _env_int(
+    "CAO_AUTHORITY_CALLBACK_ESCALATION_SECONDS", 600
+)
 
 # Only reconcile messages older than this. The grace window keeps the sweep from
 # competing with the immediate and event-driven paths for freshly queued
@@ -195,11 +206,17 @@ def graph_export_root() -> Path:
 
 
 # Provider-specific agent directories
-KIRO_AGENTS_DIR = Path(os.environ.get("CAO_AGENTS_DIR", str(Path.home() / ".kiro" / "agents")))
+KIRO_AGENTS_DIR = Path(
+    os.environ.get("CAO_AGENTS_DIR", str(Path.home() / ".kiro" / "agents"))
+)
 COPILOT_AGENTS_DIR = Path.home() / ".copilot" / "agents"  # Copilot custom agents
-OPENCODE_CONFIG_DIR = Path.home() / ".aws" / "opencode"  # OpenCode CAO-managed config root
+OPENCODE_CONFIG_DIR = (
+    Path.home() / ".aws" / "opencode"
+)  # OpenCode CAO-managed config root
 OPENCODE_AGENTS_DIR = OPENCODE_CONFIG_DIR / "agents"  # OpenCode agent .md files
-OPENCODE_CONFIG_FILE = OPENCODE_CONFIG_DIR / "opencode.json"  # OpenCode MCP + tool gating config
+OPENCODE_CONFIG_FILE = (
+    OPENCODE_CONFIG_DIR / "opencode.json"
+)  # OpenCode MCP + tool gating config
 
 # =============================================================================
 # Database Configuration
@@ -462,7 +479,9 @@ WORKFLOW_STEP_TIMEOUT = 600.0
 # (mcp_server/server.py ``client_timeout = timeout + 180.0``). This is clearly NOT the
 # flat 30s and covers any plausible multi-step, multi-minute workflow; an operator
 # running near the 100-step ceiling can raise it via the env override if needed.
-WORKFLOW_RUN_REQUEST_TIMEOUT = (WORKFLOW_STEP_TIMEOUT + 120.0) * 12 + 180.0  # = 8820.0s (~2.45h)
+WORKFLOW_RUN_REQUEST_TIMEOUT = (
+    WORKFLOW_STEP_TIMEOUT + 120.0
+) * 12 + 180.0  # = 8820.0s (~2.45h)
 
 # Script-linter rule inputs (Bolt 2, U1/C2, FR-1.3 / U1-BR-8). Import prefixes
 # whose first dotted segment marks a CAO-internal import — scripts reach CAO
@@ -475,7 +494,9 @@ SCRIPT_LINT_DISALLOWED_IMPORT_PREFIXES = frozenset({"cli_agent_orchestrator"})
 # Modules whose import earns a nondeterminism WARNING (U1-A3, Q3=A): resume
 # replays journaled calls and requires deterministic re-execution. Import-level
 # only — no call-site analysis. A warning never fails a script (FR-1.7).
-SCRIPT_LINT_NONDETERMINISM_MODULES = frozenset({"random", "secrets", "uuid", "time", "datetime"})
+SCRIPT_LINT_NONDETERMINISM_MODULES = frozenset(
+    {"random", "secrets", "uuid", "time", "datetime"}
+)
 
 # Env-var injection allowlist for POST /terminals/run-step (Bolt 2, U2/C6,
 # NFR-SEC-4 BINDING). Deny-by-default: the injection surface into a tmux

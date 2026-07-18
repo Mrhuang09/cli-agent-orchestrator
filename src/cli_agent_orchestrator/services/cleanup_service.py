@@ -5,7 +5,13 @@ import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from cli_agent_orchestrator.clients.database import InboxModel, SessionLocal, TerminalModel
+from cli_agent_orchestrator.clients.database import (
+    AuthorityCallbackModel,
+    InboxModel,
+    SessionLocal,
+    TerminalModel,
+)
+from cli_agent_orchestrator.models.inbox import AuthorityCallbackState
 from cli_agent_orchestrator.constants import (
     LOG_DIR,
     MEMORY_BASE_DIR,
@@ -29,23 +35,43 @@ def cleanup_old_data():
         # Clean up old terminals (stop FIFO readers and clear state first)
         with SessionLocal() as db:
             old_terminals = (
-                db.query(TerminalModel).filter(TerminalModel.last_active < cutoff_date).all()
+                db.query(TerminalModel)
+                .filter(TerminalModel.last_active < cutoff_date)
+                .all()
             )
             for terminal in old_terminals:
                 fifo_manager.stop_reader(terminal.id)
                 status_monitor.clear_terminal(terminal.id)
             deleted_terminals = (
-                db.query(TerminalModel).filter(TerminalModel.last_active < cutoff_date).delete()
+                db.query(TerminalModel)
+                .filter(TerminalModel.last_active < cutoff_date)
+                .delete()
             )
             db.commit()
             logger.info(f"Deleted {deleted_terminals} old terminals from database")
 
         # Clean up old inbox messages
         with SessionLocal() as db:
+            deleted_callbacks = (
+                db.query(AuthorityCallbackModel)
+                .filter(
+                    AuthorityCallbackModel.created_at < cutoff_date,
+                    AuthorityCallbackModel.state.in_(
+                        [
+                            AuthorityCallbackState.ACKNOWLEDGED.value,
+                            AuthorityCallbackState.CANCELLED.value,
+                        ]
+                    ),
+                )
+                .delete(synchronize_session=False)
+            )
             deleted_messages = (
-                db.query(InboxModel).filter(InboxModel.created_at < cutoff_date).delete()
+                db.query(InboxModel)
+                .filter(InboxModel.created_at < cutoff_date)
+                .delete()
             )
             db.commit()
+            logger.info(f"Deleted {deleted_callbacks} closed authority callbacks")
             logger.info(f"Deleted {deleted_messages} old inbox messages from database")
 
         # Clean up old terminal log files
@@ -118,9 +144,13 @@ async def cleanup_expired_memories() -> None:
         # Walk project dirs: {MEMORY_BASE_DIR}/{project_dir}/wiki/index.md
         # Glob and parse are sync I/O; offload to a thread so the event
         # loop stays responsive when there are many projects.
-        index_paths = await asyncio.to_thread(lambda: list(MEMORY_BASE_DIR.glob("*/wiki/index.md")))
+        index_paths = await asyncio.to_thread(
+            lambda: list(MEMORY_BASE_DIR.glob("*/wiki/index.md"))
+        )
         for index_path in index_paths:
-            expired_entries = await asyncio.to_thread(_find_expired_entries, index_path, now)
+            expired_entries = await asyncio.to_thread(
+                _find_expired_entries, index_path, now
+            )
             if not expired_entries:
                 continue
 
@@ -128,7 +158,11 @@ async def cleanup_expired_memories() -> None:
             # "global"/"federated" dirs → scope_id=None (flat, machine-wide),
             # project hash dirs → scope_id=hash
             project_dir_name = index_path.parent.parent.name
-            scope_id = None if project_dir_name in ("global", "federated") else project_dir_name
+            scope_id = (
+                None
+                if project_dir_name in ("global", "federated")
+                else project_dir_name
+            )
 
             for entry in expired_entries:
                 try:
