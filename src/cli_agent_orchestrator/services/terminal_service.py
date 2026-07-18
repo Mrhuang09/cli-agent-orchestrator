@@ -93,6 +93,11 @@ def recover_existing_terminal_runtimes() -> int:
     agent, so an unfinished prompt cannot be submitted accidentally.
     """
     backend = get_backend()
+    configure_interaction = getattr(
+        backend, "configure_server_interaction_defaults", None
+    )
+    if callable(configure_interaction):
+        configure_interaction()
     recovered = 0
     for summary in list_all_terminals():
         terminal_id = summary["id"]

@@ -41,6 +41,7 @@ def test_recover_existing_terminal_rebuilds_runtime_without_sending_input(monkey
 
     assert terminal_service.recover_existing_terminal_runtimes() == 1
 
+    backend.configure_server_interaction_defaults.assert_called_once_with()
     terminal_service.provider_manager.create_provider.assert_called_once_with(
         "codex",
         "terminal-1",
@@ -81,4 +82,5 @@ def test_recover_existing_terminal_skips_missing_tmux_session(monkeypatch):
     )
 
     assert terminal_service.recover_existing_terminal_runtimes() == 0
+    backend.configure_server_interaction_defaults.assert_called_once_with()
     create_provider.assert_not_called()

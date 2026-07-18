@@ -141,6 +141,10 @@ class TmuxClient:
             str(self._DEFAULT_HISTORY_LIMIT),
         )
 
+    def configure_server_interaction_defaults(self) -> None:
+        """Reapply scroll defaults to an already-running tmux server."""
+        self._configure_server_interaction_defaults()
+
     def create_session(
         self,
         session_name: str,

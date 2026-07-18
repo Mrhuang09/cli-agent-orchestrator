@@ -27,6 +27,10 @@ class TmuxBackend(TerminalBackend):
 
     # --- Session lifecycle ---
 
+    def configure_server_interaction_defaults(self) -> None:
+        """Ensure mouse scrolling survives a CAO API-only restart."""
+        self._client.configure_server_interaction_defaults()
+
     def create_session(
         self,
         session_name: str,
