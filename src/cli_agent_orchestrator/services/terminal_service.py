@@ -33,6 +33,7 @@ from cli_agent_orchestrator.clients.database import create_terminal as db_create
 from cli_agent_orchestrator.clients.database import delete_terminal as db_delete_terminal
 from cli_agent_orchestrator.clients.database import (
     get_terminal_metadata,
+    list_all_terminals,
     update_last_active,
     update_terminal_shell_command,
 )
@@ -47,6 +48,7 @@ from cli_agent_orchestrator.plugins import (
     PostSendMessageEvent,
 )
 from cli_agent_orchestrator.providers.manager import provider_manager
+from cli_agent_orchestrator.services.event_bus import bus
 from cli_agent_orchestrator.services.fifo_reader import fifo_manager
 from cli_agent_orchestrator.services.herdr_inbox_registry import get_herdr_inbox_service
 from cli_agent_orchestrator.services.memory_service import MemoryService
@@ -80,6 +82,56 @@ _deferred_init_tasks: set = set()
 
 class TerminalInputBlockedError(Exception):
     """Raised when orchestrated input would answer an active interactive prompt."""
+
+
+def recover_existing_terminal_runtimes() -> int:
+    """Reattach process-local runtime state after an API server restart.
+
+    Database rows and tmux panes outlive the server, but provider instances,
+    FIFO reader threads, and status buffers do not. Recovery reconstructs only
+    those in-memory pieces. It never initializes a provider or sends a key to an
+    agent, so an unfinished prompt cannot be submitted accidentally.
+    """
+    backend = get_backend()
+    recovered = 0
+    for summary in list_all_terminals():
+        terminal_id = summary["id"]
+        metadata = get_terminal_metadata(terminal_id)
+        if metadata is None or not backend.session_exists(metadata["tmux_session"]):
+            continue
+        try:
+            provider = provider_manager.create_provider(
+                metadata["provider"],
+                terminal_id,
+                metadata["tmux_session"],
+                metadata["tmux_window"],
+                metadata.get("agent_profile"),
+                metadata.get("allowed_tools"),
+            )
+            provider.shell_baseline = metadata.get("shell_command")
+
+            if not backend.supports_event_inbox():
+                fifo_manager.create_reader(terminal_id)
+                fifo_path = FIFO_DIR / f"{terminal_id}.fifo"
+                backend.pipe_pane(
+                    metadata["tmux_session"], metadata["tmux_window"], str(fifo_path)
+                )
+                history = backend.get_history(
+                    metadata["tmux_session"],
+                    metadata["tmux_window"],
+                    tail_lines=200,
+                    strip_escapes=False,
+                )
+                if history:
+                    bus.publish(f"terminal.{terminal_id}.output", {"data": history})
+            recovered += 1
+        except Exception:
+            logger.exception("Failed to recover terminal runtime for %s", terminal_id)
+            provider_manager.cleanup_provider(terminal_id)
+            fifo_manager.stop_reader(terminal_id)
+    if recovered:
+        logger.info("Recovered %d existing terminal runtime(s)", recovered)
+    return recovered
 
 
 def inject_memory_context(first_message: str, terminal_id: str) -> str:

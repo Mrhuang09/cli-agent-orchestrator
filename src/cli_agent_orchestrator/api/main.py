@@ -523,6 +523,10 @@ async def lifespan(app: FastAPI):
         "(StatusMonitor, LogWriter, InboxService, AuthorityCallbackWatchdog)"
     )
 
+    # Server upgrades may leave owned tmux panes alive. Reattach provider/FIFO
+    # runtime state and seed status from the current panes without sending input.
+    await asyncio.to_thread(terminal_service.recover_existing_terminal_runtimes)
+
     # Start temporary OpenCode inbox poller. GH #115 tracks replacing this
     # provider-specific wakeup path with a unified delivery engine.
     opencode_inbox_task = asyncio.create_task(opencode_inbox_delivery_daemon(registry))
