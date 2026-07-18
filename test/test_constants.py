@@ -1,7 +1,10 @@
 """Tests for CLI Agent Orchestrator constants."""
 
+import pytest
 from pathlib import Path
 from unittest.mock import patch
+
+from cli_agent_orchestrator.constants import _env_bool_strict
 
 
 class TestServerConstants:
@@ -372,3 +375,24 @@ class TestOpenCodeProviderType:
         from cli_agent_orchestrator.models.provider import ProviderType
 
         assert hasattr(ProviderType, "OPENCODE_CLI")
+class TestStrictBooleanEnvironment:
+    """Tests for strict opt-in boolean configuration."""
+
+    @pytest.mark.parametrize("value", ["true", "1", "YES", " on "])
+    def test_accepts_true_values(self, monkeypatch, value):
+        monkeypatch.setenv("CAO_TEST_BOOL", value)
+        assert _env_bool_strict("CAO_TEST_BOOL", False) is True
+
+    @pytest.mark.parametrize("value", ["false", "0", "NO", " off "])
+    def test_accepts_false_values(self, monkeypatch, value):
+        monkeypatch.setenv("CAO_TEST_BOOL", value)
+        assert _env_bool_strict("CAO_TEST_BOOL", True) is False
+
+    def test_uses_default_when_unset(self, monkeypatch):
+        monkeypatch.delenv("CAO_TEST_BOOL", raising=False)
+        assert _env_bool_strict("CAO_TEST_BOOL", False) is False
+
+    def test_rejects_ambiguous_values(self, monkeypatch):
+        monkeypatch.setenv("CAO_TEST_BOOL", "sometimes")
+        with pytest.raises(ValueError, match="CAO_TEST_BOOL must be one of"):
+            _env_bool_strict("CAO_TEST_BOOL", False)

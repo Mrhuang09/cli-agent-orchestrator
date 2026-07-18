@@ -22,6 +22,21 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_bool_strict(name: str, default: bool) -> bool:
+    """Read a boolean env var and reject ambiguous configuration values."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    normalized = raw.strip().lower()
+    if normalized in {"true", "1", "yes", "on"}:
+        return True
+    if normalized in {"false", "0", "no", "off"}:
+        return False
+    raise ValueError(
+        f"{name} must be one of true/false, 1/0, yes/no, or on/off; got {raw!r}"
+    )
+
+
 def _resolve_cao_home_dir() -> Path:
     """Return CAO's state directory, honoring an explicit local-filesystem override."""
     configured = os.environ.get("CAO_HOME_DIR")
@@ -150,6 +165,12 @@ INBOX_POLLING_INTERVAL = 5
 INBOX_RECONCILE_INTERVAL = 30  # seconds between reconciliation sweeps
 AUTHORITY_CALLBACK_RECONCILE_INTERVAL = _env_int(
     "CAO_AUTHORITY_CALLBACK_RECONCILE_INTERVAL", 30
+)
+# Callback tracking remains active regardless of this setting. This switch only
+# controls whether the watchdog injects reminder/escalation messages into live
+# authority terminals. Opt in when a deployment explicitly wants those notices.
+AUTHORITY_CALLBACK_NOTICES_ENABLED = _env_bool_strict(
+    "CAO_AUTHORITY_CALLBACK_NOTICES_ENABLED", False
 )
 AUTHORITY_CALLBACK_REMINDER_SECONDS = _env_int(
     "CAO_AUTHORITY_CALLBACK_REMINDER_SECONDS", 180

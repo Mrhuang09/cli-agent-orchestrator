@@ -10,6 +10,7 @@ from cli_agent_orchestrator.clients.database import (
 )
 from cli_agent_orchestrator.constants import (
     AUTHORITY_CALLBACK_ESCALATION_SECONDS,
+    AUTHORITY_CALLBACK_NOTICES_ENABLED,
     AUTHORITY_CALLBACK_RECONCILE_INTERVAL,
     AUTHORITY_CALLBACK_REMINDER_SECONDS,
 )
@@ -54,26 +55,32 @@ class AuthorityCallbackWatchdog:
 
     async def _reconcile(self, registry: PluginRegistry | None) -> None:
         while True:
-            receivers = await asyncio.to_thread(
-                enqueue_due_authority_callback_notices,
-                now=datetime.now(),
-                reminder_seconds=AUTHORITY_CALLBACK_REMINDER_SECONDS,
-                escalation_seconds=AUTHORITY_CALLBACK_ESCALATION_SECONDS,
-            )
-            for receiver_id in receivers:
-                try:
-                    await asyncio.to_thread(
-                        inbox_service.deliver_pending,
-                        receiver_id,
-                        registry=registry,
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "Immediate authority callback notice delivery failed for %s: %s",
-                        receiver_id,
-                        exc,
-                    )
+            await self._reconcile_once(registry)
             await asyncio.sleep(AUTHORITY_CALLBACK_RECONCILE_INTERVAL)
+
+    async def _reconcile_once(self, registry: PluginRegistry | None) -> None:
+        """Enqueue one due-notice batch when notices are explicitly enabled."""
+        if not AUTHORITY_CALLBACK_NOTICES_ENABLED:
+            return
+        receivers = await asyncio.to_thread(
+            enqueue_due_authority_callback_notices,
+            now=datetime.now(),
+            reminder_seconds=AUTHORITY_CALLBACK_REMINDER_SECONDS,
+            escalation_seconds=AUTHORITY_CALLBACK_ESCALATION_SECONDS,
+        )
+        for receiver_id in receivers:
+            try:
+                await asyncio.to_thread(
+                    inbox_service.deliver_pending,
+                    receiver_id,
+                    registry=registry,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Immediate authority callback notice delivery failed for %s: %s",
+                    receiver_id,
+                    exc,
+                )
 
 
 authority_callback_watchdog = AuthorityCallbackWatchdog()

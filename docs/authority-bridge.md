@@ -91,12 +91,14 @@ second callback. Use `--no-require-callback` only for an intentional one-way not
 
 The command reports durable inbox acceptance as `pending`. That is not task completion.
 `--wait-delivered` waits only until CAO delivers the message to the receiving terminal. After the
-receiver actually enters processing and then becomes completed/idle, the local watchdog waits
-three minutes for `--reply-to`, sends one reminder to the receiver, and alerts the original sender
-at ten minutes if the reply remains missing. These timers use the local SQLite state machine and
-do not call either model or consume model tokens. Silence is reported only as a missing callback,
-never as inferred task failure. MCP messaging is optional and is not required for authority bridge
-correctness.
+receiver actually enters processing and then becomes completed/idle, callback state remains visible
+in `cao authority status` until a correlated reply arrives. Automatic reminder and escalation
+messages are disabled by default so transient provider status cannot inject notices into an active
+model turn. Deployments that explicitly want the old three-minute reminder and ten-minute
+escalation behavior can set `CAO_AUTHORITY_CALLBACK_NOTICES_ENABLED=true` before starting CAO. The
+timers use the local SQLite state machine and do not call either model or consume model tokens.
+Silence is reported only as a missing callback, never as inferred task failure. MCP messaging is
+optional and is not required for authority bridge correctness.
 
 For automation or diagnostics:
 
@@ -106,8 +108,8 @@ cao authority status --json
 ```
 
 Text status shows awaiting/reminded/escalated counts. JSON status also includes unresolved request
-IDs and reminder/escalation deadlines. Replacing or stopping an authority generation cancels its
-unresolved callback rows so reminders cannot cross sessions.
+IDs and, when callback notices are enabled, reminder/escalation deadlines. Replacing or stopping an
+authority generation cancels its unresolved callback rows so notices cannot cross sessions.
 
 `start` refuses to proceed when it detects any of the following:
 
