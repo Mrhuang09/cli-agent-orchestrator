@@ -551,6 +551,7 @@ class ClaudeCodeProvider(BaseProvider):
             timeout = get_server_settings()["startup_prompt_handler_timeout"]
         start_time = time.time()
         bypass_accepted = False
+        resume_summary_accepted = False
         while time.time() - start_time < timeout:
             output = get_backend().get_history(self.session_name, self.window_name)
             if not output:
@@ -585,6 +586,26 @@ class ClaudeCodeProvider(BaseProvider):
                 status_monitor.notify_input_sent(self.terminal_id)
                 get_backend().send_special_key(self.session_name, self.window_name, "Enter")
                 return
+
+            # 2b) Handle the large-session "Resume from summary" menu.
+            #     Appears when --resume targets a long persisted session
+            #     (claude 2.1.x). The pre-selected first option is the
+            #     recommended, non-forking continuation, so a bare Enter accepts
+            #     it — this mirrors the Agent View attach path
+            #     (_attach_background_agent). Act once: the menu text lingers in
+            #     the capture buffer after dismissal, so guard with a flag and
+            #     let the version banner / wait_until_status() confirm readiness.
+            if not resume_summary_accepted and (
+                "Resume from summary (recommended)" in clean_output
+            ):
+                from cli_agent_orchestrator.services.status_monitor import status_monitor
+
+                logger.info("Resume-from-summary prompt detected, auto-accepting")
+                status_monitor.notify_input_sent(self.terminal_id)
+                get_backend().send_special_key(self.session_name, self.window_name, "Enter")
+                resume_summary_accepted = True
+                time.sleep(1.0)
+                continue
 
             # 3) Claude Code fully started — no prompts needed.
             #    The version banner is the ONLY reliable "ready" signal here: it
