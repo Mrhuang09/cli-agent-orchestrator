@@ -87,6 +87,37 @@ guard's UUID scan misses it. The guard has a blind spot, `start` proceeds, and i
 of failing fast with a clear message it fails deep with a 60s timeout + the misleading
 cleanup error.
 
+### Cause C (FIXED 2026-07-21) — Agent View shortcut range was hard-coded to Alt+1..3
+
+Even when the TD session is **not** busy, `start` could still fail with:
+
+```
+Failed to create terminal: Exact Claude authority session is outside
+Agent View's Alt+1..3 shortcut range; refusing to guess
+```
+
+`_agent_view_shortcut()` resolved the target session to its row number in the rendered
+Agent View and rejected anything above **3**, matching an older Agent View that only
+exposed `Alt+1..3`. Claude Code has since widened it — v2.1.217 renders
+`alt+1-6 to open` — so rows 4..6 were refused even though the TUI could open them.
+
+Rows are easy to lose, and this is the part that makes it hit in practice:
+**Agent View groups rows by state and "Needs input" sorts first.** Two stale background
+agents left awaiting input (days old, no live pid, they never age out on their own)
+permanently occupied rows 1-2 and pushed the authority session past the bound. The
+operator sees a bridge that "just stopped working" with no obvious change on their side.
+
+Fixed in `providers/claude_code.py`: introduced `AGENT_VIEW_MAX_SHORTCUT = 6`, bounded
+against it, derived the error text from the constant so code and message cannot drift
+apart, and relaxed the readiness probe from the literal `"alt+1-3 to open"` to
+`/alt\+1-\d+ to open/`. That probe had **already** silently stopped matching on current
+builds; only the generic `"Claude Code v"` + `"describe a task"` fallback kept readiness
+working, which is why the failure surfaced later (at the bound check) than it should have.
+
+Same failure *class* as Cause A: the provider screen-scrapes claude's TUI, so every
+claude release can invalidate a literal string or a magic number. Cause C is a magic
+number; Cause A is a literal prompt. Structural fix #5 below covers both.
+
 ## Structural fixes to invest in (stop fixing-per-use)
 
 1. **Table-driven startup-prompt handling with an explicit "unhandled menu" fallback.**
@@ -133,10 +164,46 @@ cao authority status --project-root <project-root>   # verify it actually came u
   (this is what revealed both the resume-summary menu and the busy-session attach).
 - `state/server.stdout.log` — the 500 on `POST …/terminals`, and the misleading cleanup.
 - `state/authority-run.json` — `lifecycle: failed` after a failed start.
+- **Render Agent View yourself** to see the exact rows the provider parses (Cause C).
+  This needs no TTY and is the fastest way to see ordering/state grouping:
+
+  ```bash
+  tmux new-session -d -s probe -x 200 -y 55 -c <project-root>
+  tmux send-keys -t probe "claude agents --cwd <project-root>" Enter
+  sleep 12 && tmux capture-pane -p -t probe   # rows + the "alt+1-N to open" hint
+  tmux kill-session -t probe
+  ```
+
+  Cross-check identity with `claude agents --json --cwd <project-root>`, but do **not**
+  trust its order: JSON order is not the TUI row order (the provider says so explicitly).
+
+## Verifying a fix to this package (build-cache trap)
+
+`uv tool install --force <dir>` **reuses the build cache**. It reports
+`Uninstalled 1 package / Installed 1 package` and looks successful while leaving the old
+module on disk — we lost time believing a correct fix "didn't work". Always use:
+
+```bash
+uv tool install --force --no-cache /path/to/cli-agent-orchestrator
+```
+
+Then verify the *installed copy*, not the source tree:
+
+```bash
+P=~/.local/share/uv/tools/cli-agent-orchestrator/lib/python3.13/site-packages/cli_agent_orchestrator
+stat -c '%y' $P/providers/claude_code.py     # mtime must be now
+grep -n AGENT_VIEW_MAX_SHORTCUT $P/providers/claude_code.py
+```
+
+Note this install is `uv tool install` **from a local directory** (see
+`uv-receipt.toml` → `directory = …`), so upstream releases never overwrite local changes;
+only an explicit `git merge upstream/main` can. Editing the copy under `site-packages`
+instead of the source tree is always wrong — the next reinstall silently reverts it.
 
 ## Reporting upstream
 
-Upstream is `awslabs/cli-agent-orchestrator`. Both causes (A: resume-summary prompt not
-handled on the direct-resume path; B: `_assert_startable` UUID-scan blind spot) are
-genuine upstream bugs worth filing. Filing a public issue is an outward-facing action —
-do it deliberately, not automatically.
+Upstream is `awslabs/cli-agent-orchestrator`. All three causes are genuine upstream bugs
+worth filing — A: resume-summary prompt not handled on the direct-resume path;
+B: `_assert_startable` UUID-scan blind spot; C: Agent View shortcut bound hard-coded to 3
+(fixed here, and the fix is small and self-contained enough to upstream as-is). Filing a
+public issue or PR is an outward-facing action — do it deliberately, not automatically.
