@@ -22,6 +22,11 @@ from cli_agent_orchestrator.utils.text import strip_terminal_escapes
 
 logger = logging.getLogger(__name__)
 
+# Highest Agent View row reachable via the Alt+<n> shortcut.
+# Claude Code widened this from Alt+1..3 to Alt+1..6 (observed on v2.1.217),
+# so pinning to 3 rejected sessions the TUI could actually open.
+AGENT_VIEW_MAX_SHORTCUT = 6
+
 
 # Custom exception for provider errors
 class ProviderError(Exception):
@@ -419,10 +424,10 @@ class ClaudeCodeProvider(BaseProvider):
                 "refusing to guess"
             )
         shortcut = matches[0]
-        if shortcut > 3:
+        if shortcut > AGENT_VIEW_MAX_SHORTCUT:
             raise ProviderError(
-                "Exact Claude authority session is outside Agent View's Alt+1..3 "
-                "shortcut range; refusing to guess"
+                "Exact Claude authority session is outside Agent View's "
+                f"Alt+1..{AGENT_VIEW_MAX_SHORTCUT} shortcut range; refusing to guess"
             )
         return shortcut
 
@@ -459,7 +464,7 @@ class ClaudeCodeProvider(BaseProvider):
             output = get_backend().get_history(self.session_name, self.window_name) or ""
             clean_output = strip_terminal_escapes(output)
             agent_view_ready = (
-                "alt+1-3 to open" in clean_output.lower()
+                re.search(r"alt\+1-\d+ to open", clean_output.lower()) is not None
                 or (
                     "Claude Code v" in clean_output
                     and "describe a task for a new session" in clean_output
